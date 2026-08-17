@@ -1,0 +1,14 @@
+* text=auto
+*.bat text eol=crlf
+*.sh text eol=lf
+*.kt text eol=lf
+*.kts text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.mjs text eol=lf
+
+# Generated and binary assets.
+app/src/main/assets/viewer/viewer.bundle.js linguist-generated=true
+app/src/main/assets/orca-printer-catalog.json linguist-generated=true
+*.jar binary
+*.stl binary

@@ -1,0 +1,9 @@
+{
+  "name": "G24 Orca Sync Companion",
+  "version": "0.1.0",
+  "description": "Cross-platform profile synchronization companion for OrcaSlicer",
+  "license": "AGPL-3.0-only",
+  "entrypoint": "orca_sync.py",
+  "supported_platforms": ["windows", "macos", "linux"],
+  "profile_types": ["machine", "filament", "process"]
+}

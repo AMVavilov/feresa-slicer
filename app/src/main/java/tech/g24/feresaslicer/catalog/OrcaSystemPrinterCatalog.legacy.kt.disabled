@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+package tech.g24.feresaslicer.catalog
+
+import android.content.Context
+import org.json.JSONObject
+
+data class OrcaSystemPrinterProfile(
+    val name: String,
+    val model: String,
+    val vendor: String,
+    val family: String,
+    val nozzleDiameter: Double,
+    val bedWidth: Double,
+    val bedDepth: Double,
+    val printableHeight: Double,
+    val gcodeFlavor: String,
+    val defaultPrintProfile: String,
+)
+
+data class OrcaSystemPrinterCatalog(
+    val sourceCommit: String,
+    val vendorCount: Int,
+    val printers: List<OrcaSystemPrinterProfile>,
+) {
+    companion object {
+        fun load(context: Context): OrcaSystemPrinterCatalog = runCatching {
+            val source = context.assets.open("orca-printer-catalog.json")
+                .bufferedReader()
+                .use { it.readText() }
+            val root = JSONObject(source)
+            val vendors = root.getJSONArray("vendors")
+            val printers = buildList {
+                for (vendorIndex in 0 until vendors.length()) {
+                    val vendor = vendors.getJSONObject(vendorIndex)
+                    val vendorName = vendor.optString("name")
+                    val entries = vendor.getJSONArray("printers")
+                    for (printerIndex in 0 until entries.length()) {
+                        val entry = entries.getJSONObject(printerIndex)
+                        add(
+                            OrcaSystemPrinterProfile(
+                                name = entry.getString("name"),
+                                model = entry.optString("model", entry.getString("name")),
+                                vendor = vendorName,
+                                family = entry.optString("family", vendorName),
+                                nozzleDiameter = entry.optDouble("nozzle", 0.4),
+                                bedWidth = entry.getDouble("bed_width"),
+                                bedDepth = entry.getDouble("bed_depth"),
+                                printableHeight = entry.optDouble("printable_height", 0.0),
+                                gcodeFlavor = entry.optString("gcode_flavor", "marlin"),
+                                defaultPrintProfile = entry.optString("default_print_profile"),
+                            )
+                        )
+                    }
+                }
+            }
+            OrcaSystemPrinterCatalog(
+                sourceCommit = root.optString("source_commit"),
+                vendorCount = vendors.length(),
+                printers = printers,
+            )
+        }.getOrElse {
+            OrcaSystemPrinterCatalog(sourceCommit = "", vendorCount = 0, printers = emptyList())
+        }
+    }
+}

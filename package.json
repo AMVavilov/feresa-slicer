@@ -1,0 +1,14 @@
+{
+  "name": "feresa-slicer-viewer",
+  "private": true,
+  "scripts": {
+    "build:viewer": "esbuild web-src/viewer.js --bundle --minify --format=iife --target=chrome100 --outfile=app/src/main/assets/viewer/viewer.bundle.js",
+    "test:viewer": "node --test web-src/toolpath-parser.test.mjs"
+  },
+  "dependencies": {
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

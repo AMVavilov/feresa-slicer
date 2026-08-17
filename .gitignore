@@ -1,0 +1,25 @@
+.gradle/
+.idea/
+build/
+**/build/
+local.properties
+*.iml
+*.apk
+*.aab
+*.zip
+.DS_Store
+.cxx/
+captures/
+external/orcaslicer/
+node_modules/
+test-data/orca-profile-cache.json
+
+# Local credentials and signing material must never be committed.
+.env
+.env.*
+!.env.example
+secrets.properties
+keystore.properties
+*.jks
+*.keystore
+google-services.json

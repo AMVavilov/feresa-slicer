@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+    <meta name="color-scheme" content="light dark">
+    <title>Feresa Slicer 3D Viewer</title>
+    <style>
+        * { box-sizing: border-box; }
+        :root { color-scheme: light; --viewer-bg: #eef1ec; --panel-bg: rgba(255,255,255,.9); --text: #4f5852; }
+        :root[data-theme="dark"] { color-scheme: dark; --viewer-bg: #202421; --panel-bg: rgba(36,42,38,.94); --text: #d8e2dc; }
+        html, body { width: 100vw; min-height: 100vh; margin: 0; overflow: hidden; background: var(--viewer-bg); font-family: sans-serif; }
+        #scene { position: fixed; inset: 0; display: block; width: 100vw; height: 100vh; touch-action: none; }
+        #status {
+            position: absolute; left: 12px; top: 12px; max-width: calc(100% - 24px);
+            padding: 7px 10px; border-radius: 9px; background: var(--panel-bg);
+            color: var(--text); font-size: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.08);
+            pointer-events: none;
+        }
+        #reset {
+            position: absolute; right: 12px; bottom: 12px; border: 1px solid #006b57;
+            border-radius: 9px; padding: 8px 11px; background: var(--panel-bg);
+            color: #32c5a3; font-weight: 600;
+        }
+        #fallback {
+            display: none; position: absolute; inset: 0; padding: 28px; align-items: center;
+            justify-content: center; text-align: center; color: #8b1f17; background: #fff3f1;
+        }
+    </style>
+    <script>
+        document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") === "dark"
+            ? "dark"
+            : "light";
+    </script>
+</head>
+<body>
+    <canvas id="scene" aria-label="3D print bed and model preview"></canvas>
+    <div id="status" role="status">Waiting for STL model</div>
+    <button id="reset" type="button">Reset camera</button>
+    <div id="fallback" role="alert">3D preview is unavailable. Numeric placement controls remain available.</div>
+    <script src="viewer.bundle.js"></script>
+</body>
+</html>
