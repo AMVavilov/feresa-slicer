@@ -8,6 +8,11 @@ Feresa Slicer is named after *Feresa attenuata*, the pygmy killer whale. It is
 an independent project and is not affiliated with or endorsed by OrcaSlicer or
 Bambu Lab.
 
+## Download
+
+[Download the latest tested Android APK](releases/feresa-slicer-latest.apk).
+This is a development build intended for testing on ARM64 Android devices.
+
 ## Current technical preview
 
 - Kotlin and Jetpack Compose Android application.
@@ -44,10 +49,11 @@ the system catalog describes printer geometry and slicing defaults, while a
 synced personal profile may additionally provide the physical printer's IP,
 protocol and authentication required for network printing.
 
-The first native core is deliberately small and dependency-free so the Android
-pipeline can be benchmarked before porting the much larger OrcaSlicer
-`libslic3r` dependency graph. It produces perimeter-only G-code and is not yet
-intended for unattended printing.
+The native core remains deliberately small while OrcaSlicer `libslic3r`
+features are ported incrementally. It currently produces perimeters and
+Orca-derived gyroid, rectilinear, line, and grid sparse infill. Unsupported
+patterns fail explicitly instead of silently falling back. The technical
+preview is not yet intended for unattended printing.
 
 ## Build
 

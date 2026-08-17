@@ -2,7 +2,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
-import { parseToolpathDetailed } from "./toolpath-parser.mjs";
+import { maximumExtrusionSpeed, parseToolpathDetailed } from "./toolpath-parser.mjs";
 
 const canvas = document.getElementById("scene");
 const statusElement = document.getElementById("status");
@@ -312,9 +312,7 @@ function rebuildToolpath() {
         ((segment.extrusion && toolpathPreview.showExtrusion) ||
             (!segment.extrusion && toolpathPreview.showTravel))
     );
-    const maximumSpeed = Math.max(1, ...toolpathData.segments
-        .filter((segment) => segment.extrusion)
-        .map((segment) => segment.speed));
+    const maximumSpeed = maximumExtrusionSpeed(toolpathData.segments);
     const positions = [];
     const colors = [];
     for (const segment of visible) {

@@ -18,8 +18,10 @@ namespace feresa_slicer {
 namespace {
 
 constexpr double kGeometryEpsilon = 1e-7;
+constexpr double kGcodeResolutionMm = 1e-4;
 constexpr double kJoinToleranceMm = 0.03;
 constexpr std::size_t kMaximumTriangleCount = 5'000'000;
+constexpr double kPi = 3.14159265358979323846;
 
 struct Vec3 {
     double x = 0.0;
@@ -297,11 +299,360 @@ std::vector<std::vector<Point2>> connect_segments(const std::vector<Segment>& se
     return paths;
 }
 
+// Rectilinear sweep adapted from OrcaSlicer's FillRectilinear geometry at
+// d5dbd96dd64b830076c81053ed5fda26d5a1771b. Feresa keeps millimetre-space
+// points here instead of pulling the complete desktop libslic3r dependency
+// graph into this first Android headless port.
+std::vector<Segment> generate_rectilinear_infill(
+    const std::vector<Segment>& boundaries,
+    double spacing,
+    double angle_degrees
+) {
+    std::vector<Segment> infill;
+    if (boundaries.empty() || !std::isfinite(spacing) || spacing <= kGeometryEpsilon) {
+        return infill;
+    }
+
+    const double angle = angle_degrees * 3.14159265358979323846 / 180.0;
+    const double cosine = std::cos(angle);
+    const double sine = std::sin(angle);
+    auto to_scan = [&](const Point2& point) {
+        return Point2{
+            point.x * cosine + point.y * sine,
+            -point.x * sine + point.y * cosine,
+        };
+    };
+    auto from_scan = [&](double u, double v) {
+        return Point2{
+            u * cosine - v * sine,
+            u * sine + v * cosine,
+        };
+    };
+
+    std::vector<Segment> scan_boundaries;
+    scan_boundaries.reserve(boundaries.size());
+    double minimum_v = std::numeric_limits<double>::max();
+    double maximum_v = std::numeric_limits<double>::lowest();
+    for (const Segment& boundary : boundaries) {
+        Segment scan{to_scan(boundary.a), to_scan(boundary.b)};
+        minimum_v = std::min({minimum_v, scan.a.y, scan.b.y});
+        maximum_v = std::max({maximum_v, scan.a.y, scan.b.y});
+        scan_boundaries.push_back(scan);
+    }
+
+    // Offset the grid by half a spacing so it does not repeatedly pass through
+    // polygon vertices. The half-open edge rule below then counts every crossing
+    // exactly once, including for polygons with holes.
+    const double first_v = std::floor(minimum_v / spacing) * spacing + spacing * 0.5;
+    for (double v = first_v; v < maximum_v - kGeometryEpsilon; v += spacing) {
+        std::vector<double> crossings;
+        crossings.reserve(scan_boundaries.size() / 2U);
+        for (const Segment& edge : scan_boundaries) {
+            const double first = edge.a.y;
+            const double second = edge.b.y;
+            if (!((first <= v && v < second) || (second <= v && v < first))) {
+                continue;
+            }
+            const double ratio = (v - first) / (second - first);
+            crossings.push_back(edge.a.x + ratio * (edge.b.x - edge.a.x));
+        }
+        std::sort(crossings.begin(), crossings.end());
+
+        std::vector<double> unique_crossings;
+        unique_crossings.reserve(crossings.size());
+        for (double crossing : crossings) {
+            if (unique_crossings.empty() ||
+                std::abs(crossing - unique_crossings.back()) > kGeometryEpsilon) {
+                unique_crossings.push_back(crossing);
+            }
+        }
+        for (std::size_t index = 1U; index < unique_crossings.size(); index += 2U) {
+            const double start = unique_crossings[index - 1U];
+            const double end = unique_crossings[index];
+            if (end - start > kGeometryEpsilon) {
+                infill.push_back({from_scan(start, v), from_scan(end, v)});
+            }
+        }
+    }
+    return infill;
+}
+
+double cross_product(const Point2& first, const Point2& second) {
+    return first.x * second.y - first.y * second.x;
+}
+
+Point2 subtract(const Point2& first, const Point2& second) {
+    return {first.x - second.x, first.y - second.y};
+}
+
+Point2 interpolate(const Point2& first, const Point2& second, double ratio) {
+    return {
+        first.x + (second.x - first.x) * ratio,
+        first.y + (second.y - first.y) * ratio,
+    };
+}
+
+bool point_inside_boundaries(const std::vector<Segment>& boundaries, const Point2& point) {
+    bool inside = false;
+    for (const Segment& edge : boundaries) {
+        if ((edge.a.y > point.y) == (edge.b.y > point.y)) {
+            continue;
+        }
+        const double crossing_x = edge.a.x +
+            (point.y - edge.a.y) * (edge.b.x - edge.a.x) / (edge.b.y - edge.a.y);
+        if (crossing_x > point.x) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+std::vector<Segment> clip_polyline_to_boundaries(
+    const std::vector<Point2>& polyline,
+    const std::vector<Segment>& boundaries
+) {
+    std::vector<Segment> clipped;
+    for (std::size_t point_index = 1U; point_index < polyline.size(); ++point_index) {
+        const Point2 start = polyline[point_index - 1U];
+        const Point2 end = polyline[point_index];
+        const Point2 direction = subtract(end, start);
+        if (squared_distance(start, end) <= kGeometryEpsilon * kGeometryEpsilon) {
+            continue;
+        }
+
+        std::vector<double> ratios{0.0, 1.0};
+        for (const Segment& edge : boundaries) {
+            const Point2 edge_direction = subtract(edge.b, edge.a);
+            const double denominator = cross_product(direction, edge_direction);
+            if (std::abs(denominator) <= kGeometryEpsilon) {
+                continue;
+            }
+            const Point2 offset = subtract(edge.a, start);
+            const double path_ratio = cross_product(offset, edge_direction) / denominator;
+            const double edge_ratio = cross_product(offset, direction) / denominator;
+            if (path_ratio > kGeometryEpsilon && path_ratio < 1.0 - kGeometryEpsilon &&
+                edge_ratio >= -kGeometryEpsilon && edge_ratio <= 1.0 + kGeometryEpsilon) {
+                ratios.push_back(path_ratio);
+            }
+        }
+        std::sort(ratios.begin(), ratios.end());
+        ratios.erase(std::unique(ratios.begin(), ratios.end(), [](double first, double second) {
+            return std::abs(first - second) <= kGeometryEpsilon;
+        }), ratios.end());
+
+        for (std::size_t ratio_index = 1U; ratio_index < ratios.size(); ++ratio_index) {
+            const double first = ratios[ratio_index - 1U];
+            const double second = ratios[ratio_index];
+            if (second - first <= kGeometryEpsilon) {
+                continue;
+            }
+            if (point_inside_boundaries(boundaries, interpolate(start, end, (first + second) * 0.5))) {
+                clipped.push_back({interpolate(start, end, first), interpolate(start, end, second)});
+            }
+        }
+    }
+    return clipped;
+}
+
+Point2 rotate_point(const Point2& point, double angle) {
+    const double cosine = std::cos(angle);
+    const double sine = std::sin(angle);
+    return {
+        cosine * point.x - sine * point.y,
+        sine * point.x + cosine * point.y,
+    };
+}
+
+// Port of OrcaSlicer FillGyroid's standard parametric generator. The formula,
+// -45 degree correction, 2.44 density correction, adaptive subdivision and
+// layer-Z phase match the pinned upstream implementation. Clipping is adapted
+// to Feresa's lightweight boundary segments in place of libslic3r ExPolygon.
+double orca_gyroid_value(
+    double x,
+    double z_sine,
+    double z_cosine,
+    bool vertical,
+    bool flip
+) {
+    if (vertical) {
+        const double phase = (z_cosine < 0.0 ? kPi : 0.0) + kPi;
+        const double a = std::sin(x + phase);
+        const double b = -z_cosine;
+        const double result = z_sine * std::cos(x + phase + (flip ? kPi : 0.0));
+        const double radius = std::sqrt(a * a + b * b);
+        return std::asin(a / radius) + std::asin(result / radius) + kPi;
+    }
+    const double phase = z_sine < 0.0 ? kPi : 0.0;
+    const double a = std::cos(x + phase);
+    const double b = -z_sine;
+    const double result = z_cosine * std::sin(x + phase + (flip ? 0.0 : kPi));
+    const double radius = std::sqrt(a * a + b * b);
+    return std::asin(a / radius) + std::asin(result / radius) + 0.5 * kPi;
+}
+
+std::vector<Point2> orca_gyroid_period(
+    double width,
+    double z_cosine,
+    double z_sine,
+    bool vertical,
+    bool flip,
+    double tolerance
+) {
+    std::vector<Point2> points;
+    const double limit = std::min(2.0 * kPi, width);
+    for (double x = 0.0; x < limit - kGeometryEpsilon; x += 0.5 * kPi) {
+        points.push_back({x, orca_gyroid_value(x, z_sine, z_cosine, vertical, flip)});
+    }
+    points.push_back({limit, orca_gyroid_value(limit, z_sine, z_cosine, vertical, flip)});
+
+    while (true) {
+        const std::size_t original_size = points.size();
+        for (std::size_t index = 1U; index < original_size; ++index) {
+            const Point2& left = points[index - 1U];
+            const Point2& right = points[index];
+            const double x = (left.x + right.x) * 0.5;
+            const Point2 middle{x, orca_gyroid_value(x, z_sine, z_cosine, vertical, flip)};
+            const double deviation = std::abs(cross_product(subtract(middle, left), subtract(middle, right)));
+            if (deviation > tolerance * tolerance) {
+                points.push_back(middle);
+            }
+        }
+        if (points.size() == original_size) {
+            break;
+        }
+        std::sort(points.begin(), points.end(), [](const Point2& first, const Point2& second) {
+            return first.x < second.x;
+        });
+    }
+    return points;
+}
+
+std::vector<Point2> orca_gyroid_wave(
+    const std::vector<Point2>& one_period,
+    double width,
+    double height,
+    double offset,
+    double scale,
+    double z_cosine,
+    double z_sine,
+    bool vertical,
+    bool flip
+) {
+    std::vector<Point2> points = one_period;
+    const double period = points.back().x;
+    if (width > period + kGeometryEpsilon) {
+        points.pop_back();
+        const std::size_t period_size = points.size();
+        do {
+            const Point2 source = points[points.size() - period_size];
+            points.push_back({source.x + period, source.y});
+        } while (points.back().x < width - kGeometryEpsilon);
+        points.push_back({width, orca_gyroid_value(width, z_sine, z_cosine, vertical, flip)});
+    }
+    for (Point2& point : points) {
+        point.y = std::clamp(point.y + offset, 0.0, height);
+        if (vertical) {
+            std::swap(point.x, point.y);
+        }
+        point.x *= scale;
+        point.y *= scale;
+    }
+    return points;
+}
+
+std::vector<Segment> generate_orca_gyroid_infill(
+    const std::vector<Segment>& boundaries,
+    double extrusion_spacing,
+    double density_fraction,
+    double angle_degrees,
+    double layer_z
+) {
+    constexpr double density_adjust = 2.44;
+    constexpr double correction_angle_degrees = -45.0;
+    constexpr double pattern_tolerance_mm = 0.2;
+    const double adjusted_density = std::max(0.001, density_fraction * density_adjust);
+    const double scale = extrusion_spacing / adjusted_density;
+    const double angle = (angle_degrees + correction_angle_degrees) * kPi / 180.0;
+
+    std::vector<Segment> rotated_boundaries;
+    rotated_boundaries.reserve(boundaries.size());
+    double minimum_x = std::numeric_limits<double>::max();
+    double minimum_y = std::numeric_limits<double>::max();
+    double maximum_x = std::numeric_limits<double>::lowest();
+    double maximum_y = std::numeric_limits<double>::lowest();
+    for (const Segment& boundary : boundaries) {
+        const Point2 first = rotate_point(boundary.a, -angle);
+        const Point2 second = rotate_point(boundary.b, -angle);
+        rotated_boundaries.push_back({first, second});
+        minimum_x = std::min({minimum_x, first.x, second.x});
+        minimum_y = std::min({minimum_y, first.y, second.y});
+        maximum_x = std::max({maximum_x, first.x, second.x});
+        maximum_y = std::max({maximum_y, first.y, second.y});
+    }
+
+    const double module = 2.0 * kPi * scale;
+    minimum_x = std::floor(minimum_x / module) * module - 10.0 * extrusion_spacing;
+    minimum_y = std::floor(minimum_y / module) * module - 10.0 * extrusion_spacing;
+    maximum_x += 10.0 * extrusion_spacing;
+    maximum_y += 10.0 * extrusion_spacing;
+    const double width = (maximum_x - minimum_x) / scale;
+    const double height = (maximum_y - minimum_y) / scale;
+    const double grid_z = layer_z / scale;
+    const double z_sine = std::sin(grid_z);
+    const double z_cosine = std::cos(grid_z);
+    const bool vertical = std::abs(z_sine) <= std::abs(z_cosine);
+    const bool initial_flip = vertical ? false : true;
+    double lower_bound = vertical ? -kPi : 0.0;
+    double upper_bound = vertical ? width - 0.5 * kPi : height;
+    const double wave_width = vertical ? height : width;
+    const double wave_height = vertical ? width : height;
+    const double tolerance = std::min(extrusion_spacing / 2.0, pattern_tolerance_mm) / scale;
+    const auto odd_period = orca_gyroid_period(
+        wave_width, z_cosine, z_sine, vertical, initial_flip, tolerance
+    );
+    const auto even_period = orca_gyroid_period(
+        wave_width, z_cosine, z_sine, vertical, !initial_flip, tolerance
+    );
+
+    std::vector<Segment> result;
+    bool flip = initial_flip;
+    for (double offset = lower_bound; offset < upper_bound + kGeometryEpsilon; offset += kPi) {
+        auto wave = orca_gyroid_wave(
+            flip ? even_period : odd_period,
+            wave_width,
+            wave_height,
+            offset,
+            scale,
+            z_cosine,
+            z_sine,
+            vertical,
+            flip
+        );
+        for (Point2& point : wave) {
+            point.x += minimum_x;
+            point.y += minimum_y;
+        }
+        auto clipped = clip_polyline_to_boundaries(wave, rotated_boundaries);
+        for (Segment& segment : clipped) {
+            segment.a = rotate_point(segment.a, angle);
+            segment.b = rotate_point(segment.b, angle);
+            if (distance(segment.a, segment.b) >= 0.8 * extrusion_spacing) {
+                result.push_back(segment);
+            }
+        }
+        flip = !flip;
+    }
+    return result;
+}
+
 bool valid_settings(const SliceSettings& settings) {
     return settings.layer_height_mm >= 0.04 && settings.layer_height_mm <= 1.0 &&
            settings.nozzle_diameter_mm >= 0.15 && settings.nozzle_diameter_mm <= 2.0 &&
            settings.filament_diameter_mm >= 1.0 && settings.filament_diameter_mm <= 3.5 &&
            settings.print_speed_mm_s >= 1.0 && settings.print_speed_mm_s <= 500.0 &&
+           settings.infill_density_percent >= 0.0 && settings.infill_density_percent <= 100.0 &&
+           std::isfinite(settings.infill_angle_degrees) &&
+           settings.infill_speed_mm_s >= 1.0 && settings.infill_speed_mm_s <= 500.0 &&
            settings.bed_width_mm >= 10.0 && settings.bed_width_mm <= 2'000.0 &&
            settings.bed_depth_mm >= 10.0 && settings.bed_depth_mm <= 2'000.0 &&
            std::isfinite(settings.model_position_x_mm) &&
@@ -319,6 +670,12 @@ SliceResult slice_stl_to_gcode(
     const std::string& output_path,
     const SliceSettings& settings
 ) {
+    if (settings.infill_pattern != "gyroid" &&
+        settings.infill_pattern != "rectilinear" &&
+        settings.infill_pattern != "line" &&
+        settings.infill_pattern != "grid") {
+        return {false, "Unsupported infill pattern: " + settings.infill_pattern};
+    }
     if (!valid_settings(settings)) {
         return {false, "Invalid slicing settings"};
     }
@@ -408,9 +765,13 @@ SliceResult slice_stl_to_gcode(
     const double extrusion_width = settings.nozzle_diameter_mm * 1.10;
     const double extrusion_per_mm = settings.layer_height_mm * extrusion_width / filament_area;
     const double print_feed_rate = settings.print_speed_mm_s * 60.0;
+    const double infill_feed_rate = settings.infill_speed_mm_s * 60.0;
+    const double infill_spacing = settings.infill_density_percent > kGeometryEpsilon
+        ? extrusion_width / (settings.infill_density_percent / 100.0)
+        : 0.0;
 
     output << "; Generated by Feresa Slicer technical preview\n"
-           << "; WARNING: perimeter-only experimental output\n"
+           << "; Perimeters and rectilinear infill\n"
            << "; triangles = " << triangles.size() << "\n"
            << "G90\nM82\n"
            << "M140 S" << settings.bed_temperature_c << "\n"
@@ -440,11 +801,12 @@ SliceResult slice_stl_to_gcode(
         output << ";LAYER:" << layer << "\n"
                << "G0 Z" << output_z << " F600\n";
         for (const auto& path : paths) {
+            output << ";TYPE:Perimeter\n";
             output << "G0 X" << path.front().x
                    << " Y" << path.front().y << " F6000\n";
             for (std::size_t point_index = 1; point_index < path.size(); ++point_index) {
                 const double segment_length = distance(path[point_index - 1U], path[point_index]);
-                if (segment_length <= kGeometryEpsilon) {
+                if (segment_length <= kGcodeResolutionMm) {
                     continue;
                 }
                 extrusion += segment_length * extrusion_per_mm;
@@ -453,6 +815,53 @@ SliceResult slice_stl_to_gcode(
                        << " Y" << path[point_index].y
                        << " E" << extrusion
                        << " F" << print_feed_rate << "\n";
+            }
+        }
+        if (settings.infill_density_percent > kGeometryEpsilon) {
+            const double density_fraction = settings.infill_density_percent / 100.0;
+            const double layer_angle = settings.infill_angle_degrees +
+                (layer % 2U == 0U ? 0.0 : 90.0);
+            std::vector<Segment> infill;
+            if (settings.infill_pattern == "gyroid") {
+                infill = generate_orca_gyroid_infill(
+                    segments,
+                    extrusion_width,
+                    density_fraction,
+                    settings.infill_angle_degrees,
+                    model_z
+                );
+            } else if (settings.infill_pattern == "grid") {
+                infill = generate_rectilinear_infill(
+                    segments, infill_spacing * 2.0, settings.infill_angle_degrees
+                );
+                auto crossing = generate_rectilinear_infill(
+                    segments, infill_spacing * 2.0, settings.infill_angle_degrees + 90.0
+                );
+                infill.insert(infill.end(), crossing.begin(), crossing.end());
+            } else {
+                infill = generate_rectilinear_infill(segments, infill_spacing, layer_angle);
+            }
+            if (!infill.empty()) {
+                output << ";TYPE:Sparse infill\n"
+                       << "; infill_pattern = " << settings.infill_pattern << "\n";
+            }
+            for (std::size_t index = 0; index < infill.size(); ++index) {
+                const Segment& line = infill[index];
+                // Reverse alternating lines to reduce travel without ever
+                // extruding across holes or separate islands.
+                const Point2 start = index % 2U == 0U ? line.a : line.b;
+                const Point2 end = index % 2U == 0U ? line.b : line.a;
+                output << "G0 X" << start.x << " Y" << start.y << " F6000\n";
+                const double segment_length = distance(start, end);
+                if (segment_length <= kGcodeResolutionMm) {
+                    continue;
+                }
+                extrusion += segment_length * extrusion_per_mm;
+                ++extrusion_segment_count;
+                output << "G1 X" << end.x
+                       << " Y" << end.y
+                       << " E" << extrusion
+                       << " F" << infill_feed_rate << "\n";
             }
         }
     }

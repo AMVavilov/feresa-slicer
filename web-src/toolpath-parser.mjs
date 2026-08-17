@@ -106,3 +106,10 @@ export function parseToolpath(gcode, bedWidth, bedDepth) {
         .filter((segment) => segment.extrusion)
         .flatMap((segment) => [...segment.start, ...segment.end]);
 }
+
+export function maximumExtrusionSpeed(segments) {
+    return segments.reduce(
+        (maximum, segment) => segment.extrusion ? Math.max(maximum, segment.speed) : maximum,
+        1,
+    );
+}

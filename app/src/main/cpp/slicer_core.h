@@ -11,6 +11,10 @@ struct SliceSettings {
     double nozzle_diameter_mm = 0.40;
     double filament_diameter_mm = 1.75;
     double print_speed_mm_s = 45.0;
+    double infill_density_percent = 20.0;
+    double infill_angle_degrees = 45.0;
+    double infill_speed_mm_s = 100.0;
+    std::string infill_pattern = "gyroid";
     double bed_width_mm = 220.0;
     double bed_depth_mm = 220.0;
     double model_position_x_mm = 110.0;

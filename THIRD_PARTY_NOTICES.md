@@ -10,6 +10,20 @@ owners; this preview is not presented as an official OrcaSlicer mobile app.
 
 Source: https://github.com/OrcaSlicer/OrcaSlicer
 
+## OrcaSlicer gyroid and rectilinear infill
+
+The Android native slicing engine contains an adapted headless port of the
+gyroid wave generator and rectilinear sweep behavior from OrcaSlicer's
+`src/libslic3r/Fill` at commit
+`d5dbd96dd64b830076c81053ed5fda26d5a1771b`. Feresa replaces OrcaSlicer's
+desktop geometry containers with its millimetre-space layer-boundary adapter;
+the upstream pattern formula, density correction, angle correction, adaptive
+subdivision, Z phase, and profile setting names are retained. The port and its
+modifications are distributed under GNU Affero General Public License version
+3.
+
+Source: https://github.com/OrcaSlicer/OrcaSlicer/tree/d5dbd96dd64b830076c81053ed5fda26d5a1771b/src/libslic3r/Fill
+
 ## OrcaSlicer system printer profiles
 
 The APK contains a compact, machine-readable catalog generated from

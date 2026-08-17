@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseToolpath, parseToolpathDetailed } from "./toolpath-parser.mjs";
+import { maximumExtrusionSpeed, parseToolpath, parseToolpathDetailed } from "./toolpath-parser.mjs";
 
 function segmentLengths(positions) {
     const lengths = [];
@@ -77,4 +77,13 @@ test("detailed preview keeps layer, speed and travel metadata", () => {
     assert.equal(result.segments[1].speed, 40);
     assert.equal(result.segments[3].layer, 1);
     assert.equal(result.segments[3].z, 0.4);
+});
+
+test("maximum speed handles toolpaths larger than the JavaScript argument limit", () => {
+    const segments = Array.from({ length: 200_000 }, (_, index) => ({
+        extrusion: index % 2 === 0,
+        speed: index % 2 === 0 ? index : 1_000_000,
+    }));
+
+    assert.equal(maximumExtrusionSpeed(segments), 199_998);
 });

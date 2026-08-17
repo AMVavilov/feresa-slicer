@@ -35,6 +35,10 @@ Java_tech_g24_feresaslicer_slicer_NativeSlicer_slice(
     jint nozzle_temperature,
     jint bed_temperature,
     jdouble print_speed,
+    jdouble infill_density,
+    jdouble infill_angle,
+    jdouble infill_speed,
+    jstring infill_pattern,
     jdouble bed_width,
     jdouble bed_depth,
     jdouble position_x,
@@ -49,6 +53,10 @@ Java_tech_g24_feresaslicer_slicer_NativeSlicer_slice(
     settings.nozzle_temperature_c = nozzle_temperature;
     settings.bed_temperature_c = bed_temperature;
     settings.print_speed_mm_s = print_speed;
+    settings.infill_density_percent = infill_density;
+    settings.infill_angle_degrees = infill_angle;
+    settings.infill_speed_mm_s = infill_speed;
+    settings.infill_pattern = from_jstring(environment, infill_pattern);
     settings.bed_width_mm = bed_width;
     settings.bed_depth_mm = bed_depth;
     settings.model_position_x_mm = position_x;

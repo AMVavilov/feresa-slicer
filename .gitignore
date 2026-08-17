@@ -5,6 +5,7 @@ build/
 local.properties
 *.iml
 *.apk
+!releases/feresa-slicer-latest.apk
 *.aab
 *.zip
 .DS_Store

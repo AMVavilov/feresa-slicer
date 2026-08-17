@@ -58,13 +58,17 @@ extrusion moves are parsed into line segments for an on-device toolpath view.
 ## Native migration path
 
 1. Prove STL import, layer generation, JNI, and ARM64 packaging with the small
-   dependency-free contour engine in this repository.
-2. Define a stable C boundary for model loading, profiles, progress, cancel,
+   dependency-free contour engine in this repository. Completed.
+2. Port OrcaSlicer's headless fill behavior incrementally. Gyroid,
+   rectilinear, line, and grid infill are currently wired through the JNI
+   settings boundary; unsupported patterns fail explicitly instead of falling
+   back silently.
+3. Define a stable C boundary for model loading, profiles, progress, cancel,
    slicing, statistics, and G-code preview.
-3. Port the minimum headless OrcaSlicer `libslic3r` dependency graph to Android
+4. Port the remaining minimum headless OrcaSlicer `libslic3r` dependency graph to Android
    NDK. Desktop wxWidgets, OpenGL GUI, Python runtime, device discovery, and the
    proprietary Bambu networking plugin stay excluded.
-4. Compare reference models against the pinned desktop OrcaSlicer build before
+5. Compare reference models against the pinned desktop OrcaSlicer build before
    enabling production printing.
 
 ## Initial constraints
@@ -73,7 +77,8 @@ extrusion moves are parsed into line segments for an on-device toolpath view.
 - Minimum Android: API 28
 - STL only in the technical preview
 - One object and one plate
-- Perimeters only; no infill, support, or retraction tuning yet
+- Perimeters plus Orca-derived gyroid, rectilinear, line, and grid sparse infill
+- No support generation or retraction tuning yet
 - Output must be inspected before printing
 
 ## Upstream baseline

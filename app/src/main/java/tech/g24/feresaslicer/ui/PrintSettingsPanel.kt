@@ -23,7 +23,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -80,7 +79,7 @@ data class PrintSettingsState(
     val bottomShellLayers: String = "3",
     val topSurfacePattern: String = "monotonicline",
     val bottomSurfacePattern: String = "monotonic",
-    val infillDensity: String = "15",
+    val infillDensity: String = "20",
     val infillPattern: String = "gyroid",
     val infillDirection: String = "45",
     val infillWallOverlap: String = "15",
@@ -116,7 +115,7 @@ data class PrintSettingsState(
     val printSpeed: String = "45",
     val outerWallSpeed: String = "45",
     val innerWallSpeed: String = "60",
-    val infillSpeed: String = "80",
+    val infillSpeed: String = "100",
     val travelSpeed: String = "150",
     val acceleration: String = "1000",
     val slicingMode: String = "regular",
@@ -607,7 +606,12 @@ private val seamOptions = listOf("nearest" to "Ближайшая", "aligned" to
 private val wallGeneratorOptions = listOf("arachne" to "Arachne", "classic" to "Классический")
 private val wallSequenceOptions = listOf("inner wall/outer wall" to "Внутренняя → внешняя", "outer wall/inner wall" to "Внешняя → внутренняя", "inner-outer-inner wall" to "Внутренняя → внешняя → внутренняя")
 private val surfacePatternOptions = listOf("monotonicline" to "Монотонные линии", "monotonic" to "Монотонный", "rectilinear" to "Линии", "concentric" to "Концентрический")
-private val infillPatternOptions = listOf("gyroid" to "Гироид", "grid" to "Сетка", "rectilinear" to "Линии", "honeycomb" to "Соты", "cubic" to "Кубический", "adaptivecubic" to "Адаптивный кубический")
+private val infillPatternOptions = listOf(
+    "gyroid" to "Гироид",
+    "grid" to "Сетка",
+    "rectilinear" to "Прямолинейный",
+    "line" to "Линии",
+)
 private val supportTypeOptions = listOf("normal(auto)" to "Обычная (авто)", "normal(manual)" to "Обычная (ручная)", "tree(auto)" to "Дерево (авто)", "tree(manual)" to "Дерево (ручная)")
 private val brimTypeOptions = listOf("no_brim" to "Без каймы", "auto_brim" to "Автоматическая", "outer_only" to "Только внешняя", "inner_only" to "Только внутренняя", "outer_and_inner" to "Внешняя и внутренняя")
 private val slicingModeOptions = listOf("regular" to "Обычный", "even_odd" to "Чётно-нечётный", "close_holes" to "Закрывать отверстия")

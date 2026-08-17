@@ -45,7 +45,6 @@ import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -349,6 +348,10 @@ fun FeresaSlicerApp() {
             nozzleTemperature,
             bedTemperature,
             printSpeed,
+            printSettings.infillDensity,
+            printSettings.infillDirection,
+            printSettings.infillSpeed,
+            printSettings.infillPattern,
             bedWidth,
             bedDepth,
             modelTransform,
@@ -1163,7 +1166,7 @@ private fun ModelWorkspaceNavigation(
                 ) {
                     Icon(
                         painter = painterResource(section.icon),
-                        contentDescription = section.label,
+                        contentDescription = localizeUiText(section.label, currentUiLanguage()),
                         tint = if (isSelected) Accent else Muted,
                         modifier = Modifier.size(23.dp),
                     )
@@ -1259,7 +1262,7 @@ private fun ModelContextRail(
             ) {
                 Icon(
                     painter = painterResource(action.icon),
-                    contentDescription = action.label,
+                    contentDescription = localizeUiText(action.label, currentUiLanguage()),
                     tint = tint,
                     modifier = Modifier.size(21.dp),
                 )
@@ -2389,6 +2392,10 @@ private fun parseSettings(
     nozzleTemperature: String,
     bedTemperature: String,
     printSpeed: String,
+    infillDensity: String,
+    infillDirection: String,
+    infillSpeed: String,
+    infillPattern: String,
     bedWidth: Double,
     bedDepth: Double,
     transform: ModelTransform,
@@ -2400,6 +2407,10 @@ private fun parseSettings(
         nozzleTemperatureC = nozzleTemperature.toInt(),
         bedTemperatureC = bedTemperature.toInt(),
         printSpeedMmS = printSpeed.toDouble(),
+        infillDensityPercent = infillDensity.removeSuffix("%").toDouble(),
+        infillAngleDegrees = infillDirection.substringBefore(',').trim().toDouble(),
+        infillSpeedMmS = infillSpeed.toDouble(),
+        infillPattern = infillPattern,
         bedWidthMm = bedWidth,
         bedDepthMm = bedDepth,
         modelPositionXmm = transform.positionX,

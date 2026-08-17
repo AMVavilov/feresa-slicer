@@ -157,6 +157,11 @@ fun ModelViewer(
     modifier: Modifier = Modifier,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val viewerContentDescription = if (currentUiLanguage() == UiLanguage.RUSSIAN) {
+        "Предпросмотр 3D-модели и траектории"
+    } else {
+        "3D model and toolpath preview"
+    }
     val resources = remember { ViewerResources(context.applicationContext) }
     var webView by remember { mutableStateOf<WebView?>(null) }
     var viewerReady by remember { mutableStateOf(false) }
@@ -220,7 +225,7 @@ fun ModelViewer(
         modifier = modifier
             .fillMaxWidth()
             .height(viewerHeight)
-            .semantics { contentDescription = "3D model and toolpath preview" },
+            .semantics { contentDescription = viewerContentDescription },
     )
 
     LaunchedEffect(viewerReady, modelFile) {
