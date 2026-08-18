@@ -18,7 +18,8 @@ class UiLocalizationTest {
         assertEquals(UiLanguage.ENGLISH, resolveUiLanguage(Locale.forLanguageTag("en-US")))
         assertEquals(UiLanguage.ENGLISH, resolveUiLanguage(Locale.forLanguageTag("ka-GE")))
         assertEquals("App settings", localizeUiText("Настройки приложения", UiLanguage.ENGLISH))
-        assertEquals("English", localizeUiText("Русский", UiLanguage.ENGLISH))
+        assertEquals("Russian", localizeUiText("Русский", UiLanguage.ENGLISH))
+        assertEquals("English", localizeUiText("Английский", UiLanguage.ENGLISH))
     }
 
     @Test

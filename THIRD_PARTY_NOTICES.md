@@ -24,6 +24,23 @@ modifications are distributed under GNU Affero General Public License version
 
 Source: https://github.com/OrcaSlicer/OrcaSlicer/tree/d5dbd96dd64b830076c81053ed5fda26d5a1771b/src/libslic3r/Fill
 
+## OrcaSlicer Mobile native engine
+
+Feresa uses the unmodified ARM64 native slicing artifacts published with
+OrcaSlicer Mobile 0.4.6. The release artifact is pinned by SHA-256
+`25bd3b72ff698b43991005f0df65ac57f67766ed4b240c48b8f3ec943eafbbdd` and
+was built from commit
+`6fc2e14b9a222301f4432cee26d7ab37d3be86d0`. The build contains a headless
+Android port of OrcaSlicer / `libslic3r` and its dynamically linked Open
+Cascade, GMP and MPFR dependencies. The engine, its corresponding source and
+Feresa's integration are distributed under GNU Affero General Public License
+version 3. Feresa is independent from both projects and is not presented as an
+official OrcaSlicer Mobile application.
+
+Source: https://github.com/CodeMasterCody3D/OrcaSlicer-Mobile/tree/6fc2e14b9a222301f4432cee26d7ab37d3be86d0
+
+Release: https://github.com/CodeMasterCody3D/OrcaSlicer-Mobile/releases/tag/0.4.6
+
 ## OrcaSlicer system printer profiles
 
 The APK contains a compact, machine-readable catalog generated from

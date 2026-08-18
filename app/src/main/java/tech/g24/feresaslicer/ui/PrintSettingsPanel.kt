@@ -121,17 +121,26 @@ data class PrintSettingsState(
     val slicingMode: String = "regular",
     val printSequence: String = "by layer",
     val spiralMode: Boolean = false,
-    val fuzzySkin: Boolean = false,
+    val fuzzySkin: String = "disabled_fuzzy",
     val gcodeComments: Boolean = true,
     val labelObjects: Boolean = true,
     val excludeObjects: Boolean = true,
     val filenameFormat: String = "{input_filename_base}_{layer_height}mm.gcode",
 )
 
-fun PrintSettingsState.applyOrcaProfile(profile: OrcaCloudProfile): PrintSettingsState {
-    fun value(key: String, current: String): String = profile.setting(key) ?: current
+fun PrintSettingsState.applyOrcaProfile(profile: OrcaCloudProfile): PrintSettingsState =
+    applyOrcaSettingValues(profile::setting)
+
+/** Hydrates every visible control from a fully resolved Orca preset inheritance chain. */
+fun PrintSettingsState.applyOrcaSettings(settings: Map<String, String>): PrintSettingsState =
+    applyOrcaSettingValues(settings::get)
+
+private fun PrintSettingsState.applyOrcaSettingValues(
+    setting: (String) -> String?,
+): PrintSettingsState {
+    fun value(key: String, current: String): String = setting(key) ?: current
     fun percent(key: String, current: String): String = value(key, current).removeSuffix("%")
-    fun flag(key: String, current: Boolean): Boolean = profile.setting(key)?.let {
+    fun flag(key: String, current: Boolean): Boolean = setting(key)?.let {
         it == "1" || it.equals("true", ignoreCase = true)
     } ?: current
     return copy(
@@ -166,7 +175,10 @@ fun PrintSettingsState.applyOrcaProfile(profile: OrcaCloudProfile): PrintSetting
         infillDirection = value("infill_direction", infillDirection),
         infillWallOverlap = percent("infill_wall_overlap", infillWallOverlap),
         enableSupport = flag("enable_support", enableSupport),
-        supportType = value("support_type", supportType),
+        // Manual support modes require painted enforcers stored in a 3MF project. This mobile
+        // screen currently imports STL, so preserve the support geometry intent by using the
+        // corresponding automatic generator instead of silently producing no supports.
+        supportType = value("support_type", supportType).replace("(manual)", "(auto)"),
         supportThresholdAngle = value("support_threshold_angle", supportThresholdAngle),
         supportOnBuildPlateOnly = flag("support_on_build_plate_only", supportOnBuildPlateOnly),
         raftLayers = value("raft_layers", raftLayers),
@@ -203,7 +215,7 @@ fun PrintSettingsState.applyOrcaProfile(profile: OrcaCloudProfile): PrintSetting
         slicingMode = value("slicing_mode", slicingMode),
         printSequence = value("print_sequence", printSequence),
         spiralMode = flag("spiral_mode", spiralMode),
-        fuzzySkin = value("fuzzy_skin", if (fuzzySkin) "external" else "none") != "none",
+        fuzzySkin = value("fuzzy_skin", fuzzySkin),
         gcodeComments = flag("gcode_comments", gcodeComments),
         labelObjects = flag("gcode_label_objects", labelObjects),
         excludeObjects = flag("exclude_object", excludeObjects),
@@ -332,7 +344,12 @@ fun PrintSettingsPanel(
             .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        PrintSettingsCategory.entries.forEach { item ->
+        // The native bridge is currently single-filament (numFilaments=1). Do not expose Orca's
+        // prime-tower/flush controls until the Filament screen can assign multiple materials and
+        // pass their palette to JNI; showing them now would create settings with no possible effect.
+        PrintSettingsCategory.entries
+            .filterNot { it == PrintSettingsCategory.MULTIMATERIAL }
+            .forEach { item ->
             Surface(
                 color = if (category == item) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
                 contentColor = if (category == item) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
@@ -360,7 +377,6 @@ private fun QualitySettings(s: PrintSettingsState, level: PrintDetailLevel, set:
     SettingsAccordion("Высота слоя", "${s.layerHeight} мм", initiallyExpanded = true) {
         NumericSetting("Высота слоя", s.layerHeight, "мм") { set(s.copy(layerHeight = it)) }
         NumericSetting("Высота первого слоя", s.initialLayerHeight, "мм") { set(s.copy(initialLayerHeight = it)) }
-        CoreSupportHint()
     }
     if (level >= PrintDetailLevel.ADVANCED) SettingsAccordion("Ширина линии", s.lineWidth) {
         NumericSetting("Ширина линии по умолчанию", s.lineWidth, "мм") { set(s.copy(lineWidth = it)) }
@@ -397,7 +413,9 @@ private fun QualitySettings(s: PrintSettingsState, level: PrintDetailLevel, set:
 private fun StrengthSettings(s: PrintSettingsState, level: PrintDetailLevel, set: (PrintSettingsState) -> Unit) {
     SettingsAccordion("Стенки", "${s.wallLoops} контура", initiallyExpanded = true) {
         NumericSetting("Количество контуров", s.wallLoops) { set(s.copy(wallLoops = it)) }
-        BooleanSetting("Определять тонкие стенки", s.detectThinWall) { set(s.copy(detectThinWall = it)) }
+        if (s.wallGenerator != "arachne") {
+            BooleanSetting("Определять тонкие стенки", s.detectThinWall) { set(s.copy(detectThinWall = it)) }
+        }
         if (level >= PrintDetailLevel.ADVANCED) BooleanSetting("Чередовать дополнительную стенку", s.alternateExtraWall) { set(s.copy(alternateExtraWall = it)) }
     }
     SettingsAccordion("Верхние и нижние оболочки") {
@@ -420,11 +438,13 @@ private fun StrengthSettings(s: PrintSettingsState, level: PrintDetailLevel, set
 private fun SupportSettings(s: PrintSettingsState, level: PrintDetailLevel, set: (PrintSettingsState) -> Unit) {
     SettingsAccordion("Поддержки", if (s.enableSupport) "Включены" else "Выключены", initiallyExpanded = true) {
         BooleanSetting("Включить поддержки", s.enableSupport) { set(s.copy(enableSupport = it)) }
-        ChoiceSetting("Тип", s.supportType, supportTypeOptions) { set(s.copy(supportType = it)) }
-        NumericSetting("Порог нависания", s.supportThresholdAngle, "°") { set(s.copy(supportThresholdAngle = it)) }
-        BooleanSetting("Только от стола", s.supportOnBuildPlateOnly) { set(s.copy(supportOnBuildPlateOnly = it)) }
+        if (s.enableSupport) {
+            ChoiceSetting("Тип", s.supportType, supportTypeOptions) { set(s.copy(supportType = it)) }
+            NumericSetting("Порог нависания", s.supportThresholdAngle, "°") { set(s.copy(supportThresholdAngle = it)) }
+            BooleanSetting("Только от стола", s.supportOnBuildPlateOnly) { set(s.copy(supportOnBuildPlateOnly = it)) }
+        }
     }
-    if (level >= PrintDetailLevel.ADVANCED) SettingsAccordion("Плот и интерфейс") {
+    if (s.enableSupport && level >= PrintDetailLevel.ADVANCED) SettingsAccordion("Плот и интерфейс") {
         NumericSetting("Слоёв плота", s.raftLayers) { set(s.copy(raftLayers = it)) }
         NumericSetting("Верхний Z-зазор", s.supportTopDistance, "мм") { set(s.copy(supportTopDistance = it)) }
         NumericSetting("Нижний Z-зазор", s.supportBottomDistance, "мм") { set(s.copy(supportBottomDistance = it)) }
@@ -434,7 +454,7 @@ private fun SupportSettings(s: PrintSettingsState, level: PrintDetailLevel, set:
             NumericSetting("Шаг интерфейса", s.supportInterfaceSpacing, "мм") { set(s.copy(supportInterfaceSpacing = it)) }
         }
     }
-    if (level == PrintDetailLevel.EXPERT) SettingsAccordion("Древовидные поддержки") {
+    if (s.enableSupport && s.supportType.startsWith("tree") && level == PrintDetailLevel.EXPERT) SettingsAccordion("Древовидные поддержки") {
         NumericSetting("Диаметр вершины", s.treeTipDiameter, "мм") { set(s.copy(treeTipDiameter = it)) }
         NumericSetting("Расстояние между ветвями", s.treeBranchDistance, "мм") { set(s.copy(treeBranchDistance = it)) }
         NumericSetting("Угол ветвей", s.treeBranchAngle, "°") { set(s.copy(treeBranchAngle = it)) }
@@ -477,11 +497,11 @@ private fun OtherSettings(s: PrintSettingsState, level: PrintDetailLevel, set: (
         NumericSetting("Ширина", s.brimWidth, "мм") { set(s.copy(brimWidth = it)) }
         if (level >= PrintDetailLevel.ADVANCED) NumericSetting("Зазор до модели", s.brimObjectGap, "мм") { set(s.copy(brimObjectGap = it)) }
     }
-    SettingsAccordion("Скорость", "${s.printSpeed} мм/с", initiallyExpanded = true) {
-        NumericSetting("Базовая скорость", s.printSpeed, "мм/с") { set(s.copy(printSpeed = it, outerWallSpeed = it)) }
-        CoreSupportHint()
+    SettingsAccordion("Скорость", "${s.outerWallSpeed} мм/с", initiallyExpanded = true) {
+        NumericSetting("Внешняя стенка", s.outerWallSpeed, "мм/с") {
+            set(s.copy(outerWallSpeed = it, printSpeed = it))
+        }
         if (level >= PrintDetailLevel.ADVANCED) {
-            NumericSetting("Внешняя стенка", s.outerWallSpeed, "мм/с") { set(s.copy(outerWallSpeed = it, printSpeed = it)) }
             NumericSetting("Внутренняя стенка", s.innerWallSpeed, "мм/с") { set(s.copy(innerWallSpeed = it)) }
             NumericSetting("Заполнение", s.infillSpeed, "мм/с") { set(s.copy(infillSpeed = it)) }
             NumericSetting("Перемещения", s.travelSpeed, "мм/с") { set(s.copy(travelSpeed = it)) }
@@ -490,14 +510,14 @@ private fun OtherSettings(s: PrintSettingsState, level: PrintDetailLevel, set: (
     }
     if (level >= PrintDetailLevel.ADVANCED) SettingsAccordion("Специальный режим") {
         ChoiceSetting("Режим нарезки", s.slicingMode, slicingModeOptions) { set(s.copy(slicingMode = it)) }
-        ChoiceSetting("Последовательность печати", s.printSequence, printSequenceOptions) { set(s.copy(printSequence = it)) }
-        BooleanSetting("Спиральная ваза", s.spiralMode) { set(s.copy(spiralMode = it)) }
-        if (level == PrintDetailLevel.EXPERT) BooleanSetting("Пушистая поверхность", s.fuzzySkin) { set(s.copy(fuzzySkin = it)) }
+        if (level == PrintDetailLevel.EXPERT) {
+            ChoiceSetting("Пушистая поверхность", s.fuzzySkin, fuzzySkinOptions) {
+                set(s.copy(fuzzySkin = it))
+            }
+        }
     }
     if (level == PrintDetailLevel.EXPERT) SettingsAccordion("Вывод G-code") {
         BooleanSetting("Подробные комментарии", s.gcodeComments) { set(s.copy(gcodeComments = it)) }
-        BooleanSetting("Метки объектов", s.labelObjects) { set(s.copy(labelObjects = it)) }
-        BooleanSetting("Поддержка исключения объектов", s.excludeObjects) { set(s.copy(excludeObjects = it)) }
         NumericSetting("Шаблон имени файла", s.filenameFormat) { set(s.copy(filenameFormat = it)) }
     }
 }
@@ -594,11 +614,6 @@ private fun ChoiceSetting(label: String, value: String, options: List<Pair<Strin
     }
 }
 
-@Composable
-private fun CoreSupportHint() {
-    Text("✓ Используется текущим ядром нарезки", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
-}
-
 private fun dropdownLabel(value: String, options: List<Pair<String, String>>): String =
     options.firstOrNull { it.first == value }?.second ?: value
 
@@ -612,7 +627,16 @@ private val infillPatternOptions = listOf(
     "rectilinear" to "Прямолинейный",
     "line" to "Линии",
 )
-private val supportTypeOptions = listOf("normal(auto)" to "Обычная (авто)", "normal(manual)" to "Обычная (ручная)", "tree(auto)" to "Дерево (авто)", "tree(manual)" to "Дерево (ручная)")
+private val supportTypeOptions = listOf(
+    "normal(auto)" to "Обычная (авто)",
+    "tree(auto)" to "Дерево (авто)",
+)
 private val brimTypeOptions = listOf("no_brim" to "Без каймы", "auto_brim" to "Автоматическая", "outer_only" to "Только внешняя", "inner_only" to "Только внутренняя", "outer_and_inner" to "Внешняя и внутренняя")
 private val slicingModeOptions = listOf("regular" to "Обычный", "even_odd" to "Чётно-нечётный", "close_holes" to "Закрывать отверстия")
-private val printSequenceOptions = listOf("by layer" to "По слоям", "by object" to "По объектам")
+private val fuzzySkinOptions = listOf(
+    "disabled_fuzzy" to "Выключено",
+    "external" to "Контур",
+    "hole" to "Отверстия",
+    "all" to "Контур и отверстия",
+    "allwalls" to "Все стенки",
+)

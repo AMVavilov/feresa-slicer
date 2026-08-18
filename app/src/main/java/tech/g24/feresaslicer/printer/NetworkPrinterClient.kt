@@ -162,9 +162,12 @@ object NetworkPrinterClient {
         http.connectTimeout = CONNECT_TIMEOUT_MS
         http.readTimeout = READ_TIMEOUT_MS
         http.useCaches = false
-        if (connection.apiKey.isNotBlank()) {
-            val header = if (connection.hostType == PrinterHostType.MOONRAKER) "X-Api-Key" else "X-Api-Key"
-            http.setRequestProperty(header, connection.apiKey)
+        printerAuthenticationHeaders(
+            apiKey = connection.apiKey,
+            username = connection.username,
+            password = connection.password,
+        ).forEach { (name, value) ->
+            http.setRequestProperty(name, value)
         }
         return http
     }

@@ -5,15 +5,23 @@ build/
 local.properties
 *.iml
 *.apk
-!releases/feresa-slicer-latest.apk
 *.aab
 *.zip
 .DS_Store
 .cxx/
 captures/
 external/orcaslicer/
+external/orcaslicer-mobile-port/
+external/u1-orca-android-port/
 node_modules/
 test-data/orca-profile-cache.json
+
+# Reproducibly fetched from the checksummed OrcaSlicer Mobile release by
+# scripts/fetch-orca-mobile-engine.sh before Android builds.
+app/src/main/jniLibs/arm64-v8a/
+
+# Local browser smoke-test state.
+.playwright-cli/
 
 # Local credentials and signing material must never be committed.
 .env

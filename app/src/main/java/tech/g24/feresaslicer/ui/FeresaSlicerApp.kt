@@ -48,6 +48,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -74,7 +75,13 @@ import androidx.core.view.WindowCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import tech.g24.feresaslicer.slicer.NativeSlicer
+import tech.g24.feresaslicer.slicer.OrcaDynamicPrintConfigBuilder
+import tech.g24.feresaslicer.slicer.OrcaMachineFilamentScalars
+import tech.g24.feresaslicer.slicer.OrcaNativeEngine
+import tech.g24.feresaslicer.slicer.OrcaProfileSettingsResolver
+import tech.g24.feresaslicer.slicer.OrcaProcessSettingsPayload
+import tech.g24.feresaslicer.slicer.OrcaSelectedProfiles
+import tech.g24.feresaslicer.slicer.OrcaSystemPresetCatalog
 import tech.g24.feresaslicer.slicer.SliceReport
 import tech.g24.feresaslicer.slicer.SlicerSettings
 import java.io.File
@@ -91,7 +98,19 @@ import tech.g24.feresaslicer.auth.OrcaProfileType
 import tech.g24.feresaslicer.auth.printerConnection
 import tech.g24.feresaslicer.catalog.OrcaSystemPrinterCatalog
 import tech.g24.feresaslicer.catalog.OrcaSystemPrinterProfile
+import tech.g24.feresaslicer.catalog.filterPrinters
 import tech.g24.feresaslicer.printer.NetworkPrinterClient
+import tech.g24.feresaslicer.modelimport.ModelFileImporter
+import tech.g24.feresaslicer.plate.PlateBounds
+import tech.g24.feresaslicer.plate.PlateAxis
+import tech.g24.feresaslicer.plate.PlateModelSource
+import tech.g24.feresaslicer.plate.PlateObject
+import tech.g24.feresaslicer.plate.PlateObjectId
+import tech.g24.feresaslicer.plate.PlateObjectTransform
+import tech.g24.feresaslicer.plate.PlateWorkspace
+import tech.g24.feresaslicer.plate.RectangularBuildVolume
+import tech.g24.feresaslicer.slicer.StlPlateComposer
+import tech.g24.feresaslicer.slicer.StlPlatePlacement
 
 private val LightColors = lightColorScheme(
     primary = Color(0xFF006B57),
@@ -129,6 +148,7 @@ private enum class AppThemeMode(val label: String) {
 
 private const val ThemePreferences = "feresa_slicer_preferences"
 private const val ThemeModeKey = "theme_mode"
+private const val LanguageModeKey = "language_mode"
 
 private val Surface: Color
     @Composable get() = MaterialTheme.colorScheme.surface
@@ -183,6 +203,15 @@ fun FeresaSlicerApp() {
             }.getOrDefault(AppThemeMode.SYSTEM),
         )
     }
+    var uiLanguage by remember {
+        mutableStateOf(
+            runCatching {
+                UiLanguage.valueOf(
+                    themePreferences.getString(LanguageModeKey, null) ?: UiLanguage.RUSSIAN.name,
+                )
+            }.getOrDefault(UiLanguage.RUSSIAN),
+        )
+    }
     val useDarkTheme = when (themeMode) {
         AppThemeMode.SYSTEM -> isSystemInDarkTheme()
         AppThemeMode.LIGHT -> false
@@ -200,11 +229,11 @@ fun FeresaSlicerApp() {
             }
         }
     }
-    var selectedFile by remember { mutableStateOf<File?>(null) }
-    var selectedName by remember { mutableStateOf<String?>(null) }
+    var plateWorkspace by remember { mutableStateOf(PlateWorkspace.empty()) }
     var generatedGcode by remember { mutableStateOf<File?>(null) }
     var report by remember { mutableStateOf<SliceReport?>(null) }
     var isWorking by remember { mutableStateOf(false) }
+    var sliceGeneration by remember { mutableStateOf(0L) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var viewerMessage by remember { mutableStateOf<String?>(null) }
     var showLicense by remember { mutableStateOf(false) }
@@ -213,19 +242,29 @@ fun FeresaSlicerApp() {
     var isTestingPrinter by remember { mutableStateOf(false) }
     var printerConnectionStatus by remember { mutableStateOf<String?>(null) }
     var printerDialogResult by remember { mutableStateOf<PrinterDialogResult?>(null) }
-    var modelTransform by remember { mutableStateOf(ModelTransform()) }
     var viewerSceneState by remember { mutableStateOf<ViewerSceneState?>(null) }
     var viewerMode by remember { mutableStateOf(ViewerMode.MODEL) }
     var bedWidth by remember { mutableStateOf(220.0) }
     var bedDepth by remember { mutableStateOf(220.0) }
     var printableHeight by remember { mutableStateOf(250.0) }
     var printerFirmware by remember { mutableStateOf("marlin") }
-    val systemPrinterCatalog = remember { OrcaSystemPrinterCatalog.load(context) }
+    val applicationContext = context.applicationContext
+    var systemPresetCatalog by remember(applicationContext) {
+        mutableStateOf<OrcaSystemPresetCatalog?>(null)
+    }
+    var compatibleSystemPrinterCatalog by remember(applicationContext) {
+        mutableStateOf(OrcaSystemPrinterCatalog())
+    }
+    var isSystemCatalogLoading by remember(applicationContext) { mutableStateOf(true) }
     val authViewModel: OrcaAuthViewModel = viewModel()
     val authState by authViewModel.state.collectAsState()
     val cloudProfileState by authViewModel.profileState.collectAsState()
     var destination by remember { mutableStateOf(AppDestination.MODEL) }
     var modelWorkspaceSection by remember { mutableStateOf(ModelWorkspaceSection.FILE) }
+    var renameObjectId by remember { mutableStateOf<PlateObjectId?>(null) }
+    var renameObjectValue by remember { mutableStateOf("") }
+    var linkScaleAxes by remember { mutableStateOf(true) }
+    var modelActionMessage by remember { mutableStateOf<String?>(null) }
     var cameraResetRequest by remember { mutableStateOf(0) }
     var toolpathMinimumLayer by remember { mutableStateOf(0) }
     var toolpathMaximumLayer by remember { mutableStateOf(0) }
@@ -234,7 +273,70 @@ fun FeresaSlicerApp() {
     var showExtrusionMoves by remember { mutableStateOf(true) }
     var showTravelMoves by remember { mutableStateOf(false) }
 
+    val selectedPlateObject = plateWorkspace.selectedObject
+    val selectedFile = selectedPlateObject?.source?.file
+    val selectedName = selectedPlateObject?.sourceName
+    val modelTransform = selectedPlateObject?.transform?.toViewerTransform()
+        ?: ModelTransform(positionX = bedWidth / 2.0, positionY = bedDepth / 2.0)
+    val viewerModelObjects = plateWorkspace.objects.map { model ->
+        ViewerModelObject(
+            objectId = model.id.value,
+            file = model.source.file,
+            transform = model.transform.toViewerTransform(),
+        )
+    }
+    val hasPlateModels = plateWorkspace.objects.isNotEmpty()
+
+    fun invalidatePlateSlice() {
+        sliceGeneration += 1L
+        generatedGcode = null
+        report = null
+        viewerSceneState = null
+        viewerMode = ViewerMode.MODEL
+    }
+
+    fun updateSelectedTransform(update: (PlateObjectTransform) -> PlateObjectTransform) {
+        val selectedId = plateWorkspace.selectedObjectId ?: return
+        plateWorkspace = plateWorkspace.updateTransform(selectedId, update)
+        invalidatePlateSlice()
+        modelActionMessage = null
+    }
+
+    fun commitPlateWorkspace(updated: PlateWorkspace, message: String? = null) {
+        plateWorkspace = updated
+        invalidatePlateSlice()
+        viewerMessage = null
+        modelActionMessage = message
+    }
+
+    fun commitPlateWorkspaceOnExactBed(
+        updated: PlateWorkspace,
+        objectId: PlateObjectId,
+        message: String,
+    ) {
+        scope.launch {
+            isWorking = true
+            runCatching {
+                withContext(Dispatchers.Default) { updated.moveObjectToExactBed(objectId) }
+            }.onSuccess { exactWorkspace ->
+                commitPlateWorkspace(exactWorkspace, message)
+            }.onFailure { error ->
+                errorMessage = error.message ?: "Не удалось разместить модель на столе"
+            }
+            isWorking = false
+        }
+    }
+
+    fun applyViewerSelection(selection: ViewerObjectSelection) {
+        val selectedId = selection.objectId?.let(::PlateObjectId)
+        if (selectedId == null || plateWorkspace.objectOrNull(selectedId) != null) {
+            plateWorkspace = plateWorkspace.select(selectedId)
+            viewerSceneState = null
+        }
+    }
+
     var printSettings by remember { mutableStateOf(PrintSettingsState()) }
+    var dirtyProcessSettingKeys by remember { mutableStateOf(emptySet<String>()) }
     var printDetailLevel by remember { mutableStateOf(PrintDetailLevel.ADVANCED) }
     var printSettingsCategory by remember { mutableStateOf(PrintSettingsCategory.QUALITY) }
     val layerHeight = printSettings.layerHeight
@@ -247,49 +349,112 @@ fun FeresaSlicerApp() {
     var filamentProfileName by remember { mutableStateOf("Generic PLA") }
     var processProfileName by remember { mutableStateOf("Standard quality") }
     var activeConnectionProfileId by remember { mutableStateOf<String?>(null) }
+    var activeSystemPrinterProfile by remember { mutableStateOf<OrcaCloudProfile?>(null) }
+    var activeSystemProcessProfile by remember { mutableStateOf<OrcaCloudProfile?>(null) }
 
     val activePrinterProfile = cloudProfileState.profiles.firstOrNull {
         it.type == OrcaProfileType.PRINTER && it.id == activeConnectionProfileId
     } ?: cloudProfileState.profiles.firstOrNull {
         it.type == OrcaProfileType.PRINTER && it.name == printerProfileName
+    } ?: activeSystemPrinterProfile?.takeIf { it.name == printerProfileName }
+    val activeFilamentProfile = cloudProfileState.profiles.firstOrNull {
+        it.type == OrcaProfileType.FILAMENT && it.name == filamentProfileName
     }
+    val activeProcessProfile = cloudProfileState.profiles.firstOrNull {
+        it.type == OrcaProfileType.PROCESS && it.name == processProfileName
+    } ?: activeSystemProcessProfile?.takeIf { it.name == processProfileName }
     val activePrinterConnection = activePrinterProfile?.printerConnection()
 
-    LaunchedEffect(cloudProfileState.profiles) {
+    LaunchedEffect(applicationContext) {
+        val loadedCatalogs = runCatching {
+            withContext(Dispatchers.IO) {
+                val printerCatalog = OrcaSystemPrinterCatalog.load(applicationContext)
+                val presetCatalog = OrcaSystemPresetCatalog.load(applicationContext)
+                val compatiblePrinters = printerCatalog.filterPrinters { profile ->
+                    presetCatalog.hasBundledProfile(
+                        type = OrcaProfileType.PRINTER,
+                        name = profile.name,
+                        contextHint = "${profile.vendor} ${profile.family} ${profile.model}",
+                    )
+                }
+                presetCatalog to compatiblePrinters
+            }
+        }
+        loadedCatalogs.onSuccess { (presetCatalog, printerCatalog) ->
+            systemPresetCatalog = presetCatalog
+            compatibleSystemPrinterCatalog = printerCatalog
+        }.onFailure { error ->
+            errorMessage = error.message ?: "Не удалось загрузить системные профили Orca"
+        }
+        isSystemCatalogLoading = false
+    }
+
+    LaunchedEffect(cloudProfileState.profiles, systemPresetCatalog) {
         val connectedProfile = cloudProfileState.profiles
             .firstOrNull { it.printerConnection()?.hostType?.canSendGcode == true }
         if (activeConnectionProfileId == null || cloudProfileState.profiles.none { it.id == activeConnectionProfileId }) {
             activeConnectionProfileId = connectedProfile?.id
         }
+        val presetCatalog = systemPresetCatalog ?: return@LaunchedEffect
         if (printerProfileName == "Generic 220") {
             connectedProfile?.let { profile ->
+                runCatching {
+                    resolveProfileSettingsForUi(
+                        catalog = presetCatalog,
+                        profile = profile,
+                        availableProfiles = cloudProfileState.profiles,
+                    )
+                }.onSuccess { resolved ->
                     printerProfileName = profile.name
-                    firstProfileSetting(profile, "nozzle_diameter")?.let { nozzleDiameter = it }
+                    activeSystemPrinterProfile = null
+                    firstProfileSetting(resolved, "nozzle_diameter")?.let { nozzleDiameter = it }
+                    printerDimensions(resolved)?.let { (width, depth) ->
+                        bedWidth = width
+                        bedDepth = depth
+                        plateWorkspace.selectedObjectId?.let { selectedId ->
+                            plateWorkspace = plateWorkspace.updateTransform(selectedId) {
+                                it.copy(positionXmm = width / 2.0, positionYmm = depth / 2.0)
+                            }
+                        }
+                    }
+                    firstProfileSetting(resolved, "printable_height", "max_print_height")
+                        ?.toDoubleOrNull()
+                        ?.takeIf { it > 0.0 }
+                        ?.let { printableHeight = it }
+                    firstProfileSetting(resolved, "gcode_flavor")?.let { printerFirmware = it }
                     printerConnectionStatus = "Подключение загружено из OrcaCloud"
+                    invalidatePlateSlice()
+                }.onFailure { error ->
+                    errorMessage = error.message ?: "Не удалось разрешить профиль принтера Orca"
                 }
+            }
         }
     }
 
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
             scope.launch {
                 isWorking = true
                 errorMessage = null
                 runCatching {
-                    withContext(Dispatchers.IO) { copyModelToCache(context, uri) }
-                }.onSuccess { imported ->
-                    selectedFile = imported.first
-                    selectedName = imported.second
+                    withContext(Dispatchers.IO) {
+                        uris.map { uri ->
+                            val id = PlateObjectId.newId()
+                            id to copyModelToCache(context, uri, id)
+                        }
+                    }
+                }.onSuccess { importedModels ->
+                    var updatedWorkspace = plateWorkspace
+                    val buildVolume = RectangularBuildVolume(bedWidth, bedDepth, printableHeight)
+                    importedModels.forEach { (id, source) ->
+                        val transform = findInitialPlateTransform(updatedWorkspace, source, buildVolume)
+                        updatedWorkspace = updatedWorkspace.add(source, id, transform, select = true)
+                    }
+                    plateWorkspace = updatedWorkspace
                     modelWorkspaceSection = ModelWorkspaceSection.VIEW
-                    generatedGcode = null
-                    report = null
-                    modelTransform = ModelTransform(
-                        positionX = bedWidth / 2.0,
-                        positionY = bedDepth / 2.0,
-                    )
-                    viewerSceneState = null
-                    viewerMode = ViewerMode.MODEL
+                    invalidatePlateSlice()
                     viewerMessage = null
+                    modelActionMessage = "Добавлено моделей: ${importedModels.size}"
                 }.onFailure { error ->
                     errorMessage = error.message ?: "Не удалось импортировать выбранный файл"
                 }
@@ -318,29 +483,39 @@ fun FeresaSlicerApp() {
     }
 
     val removeCurrentModel: () -> Unit = {
-        selectedFile = null
-        selectedName = null
-        generatedGcode = null
-        report = null
-        viewerSceneState = null
+        plateWorkspace.selectedObjectId?.let { selectedId ->
+            plateWorkspace = plateWorkspace.remove(selectedId)
+        }
+        invalidatePlateSlice()
         viewerMessage = null
-        viewerMode = ViewerMode.MODEL
-        modelTransform = ModelTransform(
-            positionX = bedWidth / 2.0,
-            positionY = bedDepth / 2.0,
-        )
+        modelActionMessage = null
     }
 
     val saveCurrentGcode: () -> Unit = {
-        val defaultName = selectedName
-            ?.substringBeforeLast('.')
-            ?.plus(".gcode")
+        val defaultName = report
+            ?.recommendedFileName
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?.let { File(it).name }
+            ?: selectedName
+                ?.substringBeforeLast('.')
+                ?.plus(".gcode")
             ?: "feresa-slicer.gcode"
         gcodeSaver.launch(defaultName)
     }
 
     val sliceCurrentModel: () -> Unit = slice@{
-        val source = selectedFile ?: return@slice
+        if (isWorking) return@slice
+        val plateSnapshot = plateWorkspace
+        val presetCatalogSnapshot = systemPresetCatalog
+        if (plateSnapshot.objects.isEmpty()) return@slice
+        val plateValidation = plateSnapshot.validate(
+            RectangularBuildVolume(bedWidth, bedDepth, printableHeight),
+        )
+        if (!plateValidation.insideBuildVolume) {
+            errorMessage = "Один или несколько объектов выходят за пределы области печати"
+            return@slice
+        }
         val settings = parseSettings(
             layerHeight,
             nozzleDiameter,
@@ -348,10 +523,6 @@ fun FeresaSlicerApp() {
             nozzleTemperature,
             bedTemperature,
             printSpeed,
-            printSettings.infillDensity,
-            printSettings.infillDirection,
-            printSettings.infillSpeed,
-            printSettings.infillPattern,
             bedWidth,
             bedDepth,
             modelTransform,
@@ -360,17 +531,86 @@ fun FeresaSlicerApp() {
             errorMessage = "Проверьте числовые параметры печати"
             return@slice
         }
+        sliceGeneration += 1L
+        val generationSnapshot = sliceGeneration
 
         scope.launch {
             isWorking = true
             errorMessage = null
             report = null
+            generatedGcode = null
+            viewerMode = ViewerMode.MODEL
             val outputFile = File(context.cacheDir, "feresa-slicer-output.gcode")
+            val configFile = File(context.cacheDir, "feresa-orca-current.ini")
             runCatching {
                 withContext(Dispatchers.Default) {
-                    NativeSlicer.sliceModel(source.path, outputFile.path, settings)
+                    val completeProcessPayload = printSettings.toOrcaProcessSettingsPayload()
+                    val liveProcessPayload = if (activeProcessProfile == null) {
+                        completeProcessPayload
+                    } else {
+                        OrcaProcessSettingsPayload.from(
+                            completeProcessPayload.asMap().filterKeys(dirtyProcessSettingKeys::contains),
+                        )
+                    }
+                    val selectedProfiles = OrcaSelectedProfiles(
+                        printer = activePrinterProfile,
+                        filament = activeFilamentProfile,
+                        process = activeProcessProfile,
+                        availableCloudProfiles = cloudProfileState.profiles,
+                    )
+                    val hydratedProfiles = if (
+                        selectedProfiles.printer != null ||
+                        selectedProfiles.filament != null ||
+                        selectedProfiles.process != null
+                    ) {
+                        (presetCatalogSnapshot
+                            ?: error("Системные профили Orca ещё загружаются"))
+                            .augment(selectedProfiles)
+                    } else {
+                        selectedProfiles
+                    }
+                    val dynamicConfig = OrcaDynamicPrintConfigBuilder.build(
+                        profiles = hydratedProfiles,
+                        machineFilament = OrcaMachineFilamentScalars(
+                            bedWidthMm = bedWidth,
+                            bedDepthMm = bedDepth,
+                            printableHeightMm = printableHeight,
+                            nozzleDiameterMm = nozzleDiameter,
+                            filamentDiameterMm = filamentDiameter,
+                            nozzleTemperatureC = nozzleTemperature,
+                            bedTemperatureC = bedTemperature,
+                            gcodeFlavor = printerFirmware,
+                        ),
+                        liveProcessSettings = liveProcessPayload,
+                    )
+                    dynamicConfig.writeTo(configFile)
+                    // Always compose the complete plate, including a one-object plate. This makes
+                    // the geometry handed to Orca identical to the XYZ/non-uniform transform shown
+                    // by the viewer instead of silently reducing it to legacy Z rotation + scale.
+                    val composed = StlPlateComposer.compose(
+                        placements = plateSnapshot.objects.map { it.toStlPlatePlacement() },
+                        output = File(context.cacheDir, "feresa-slicer-plate.stl"),
+                    )
+                    val sliceSource = composed.file
+                    val sliceSettings = settings.copy(
+                        modelPositionXmm = composed.bounds.centerX,
+                        modelPositionYmm = composed.bounds.centerY,
+                        modelRotationDegrees = 0.0,
+                        modelScale = 1.0,
+                        // The plate composer already applied the complete XYZ transform. Keeping
+                        // its Z coordinates is essential for intentionally raised objects and
+                        // support generation; Orca must not silently drop the plate back to Z=0.
+                        ensureModelOnBed = false,
+                    )
+                    OrcaNativeEngine().sliceModel(
+                        inputPath = sliceSource.path,
+                        configPath = configFile.path,
+                        outputPath = outputFile.path,
+                        settings = sliceSettings,
+                    )
                 }
             }.onSuccess { result ->
+                if (sliceGeneration != generationSnapshot) return@onSuccess
                 report = result
                 if (result.success) {
                     generatedGcode = outputFile
@@ -386,6 +626,7 @@ fun FeresaSlicerApp() {
                     errorMessage = result.message
                 }
             }.onFailure { error ->
+                if (sliceGeneration != generationSnapshot) return@onFailure
                 generatedGcode = null
                 errorMessage = error.message ?: "Ошибка слайсера"
             }
@@ -393,15 +634,16 @@ fun FeresaSlicerApp() {
         }
     }
 
-    MaterialTheme(colorScheme = appColorScheme) {
-        Scaffold(
+    CompositionLocalProvider(LocalUiLanguage provides uiLanguage) {
+        MaterialTheme(colorScheme = appColorScheme) {
+            Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    if (destination == AppDestination.MODEL && selectedFile != null) {
+                    if (destination == AppDestination.MODEL && hasPlateModels) {
                         ModelWorkspaceNavigation(
                             selected = modelWorkspaceSection,
                             onSelect = { modelWorkspaceSection = it },
@@ -413,9 +655,9 @@ fun FeresaSlicerApp() {
                         NavigationBarItem(
                             selected = destination == AppDestination.MODEL,
                             onClick = {
-                                if (destination == AppDestination.MODEL && selectedFile != null) {
+                                if (destination == AppDestination.MODEL && hasPlateModels) {
                                     modelWorkspaceSection = ModelWorkspaceSection.FILE
-                                } else if (selectedFile != null && modelWorkspaceSection == ModelWorkspaceSection.FILE) {
+                                } else if (hasPlateModels && modelWorkspaceSection == ModelWorkspaceSection.FILE) {
                                     modelWorkspaceSection = ModelWorkspaceSection.VIEW
                                 }
                                 destination = AppDestination.MODEL
@@ -479,9 +721,11 @@ fun FeresaSlicerApp() {
                         showExtrusion = showExtrusionMoves,
                         showTravel = showTravelMoves,
                         progress = toolpathProgress,
-                        lineWidthMm = nozzleDiameter.toDoubleOrNull() ?: 0.4,
                         layerHeightMm = layerHeight.toDoubleOrNull() ?: 0.2,
                         cameraResetRequest = cameraResetRequest,
+                        modelObjects = viewerModelObjects,
+                        selectedObjectId = plateWorkspace.selectedObjectId?.value,
+                        onObjectSelected = ::applyViewerSelection,
                         onSceneState = { viewerSceneState = it },
                         onViewerError = { viewerMessage = it },
                         onSlice = sliceCurrentModel,
@@ -507,24 +751,71 @@ fun FeresaSlicerApp() {
                         )
                     }
                 } else if (modelWorkspaceSection == ModelWorkspaceSection.FILE) {
-                    SectionCard(title = "Файл модели") {
-                        val sourceFile = selectedFile
-                        if (sourceFile == null) {
+                    SectionCard(title = "Модели на столе") {
+                        if (plateWorkspace.objects.isEmpty()) {
                             Text("Файл не выбран", fontWeight = FontWeight.SemiBold)
                             Text(
-                                "Поддерживаются модели STL в binary- и ASCII-формате.",
+                                "Поддерживаются STL, OBJ и 3MF. Можно выбрать несколько файлов сразу.",
                                 color = Muted,
                                 fontSize = 13.sp,
                             )
                         } else {
-                            Text(
-                                selectedName ?: sourceFile.name,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 18.sp,
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text("Формат: STL", color = Muted, fontSize = 13.sp)
-                            Text("Размер: ${formatFileSize(sourceFile.length())}", color = Muted, fontSize = 13.sp)
+                            Text("Объектов: ${plateWorkspace.objects.size}", color = Muted, fontSize = 13.sp)
+                            Spacer(Modifier.height(8.dp))
+                            plateWorkspace.objects.forEach { model ->
+                                val isSelected = model.id == plateWorkspace.selectedObjectId
+                                androidx.compose.material3.Surface(
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceVariant
+                                    },
+                                    shape = RoundedCornerShape(14.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            plateWorkspace = plateWorkspace.select(model.id)
+                                            viewerSceneState = null
+                                            viewerMode = ViewerMode.MODEL
+                                        },
+                                ) {
+                                    Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                                        Text(
+                                            model.sourceName,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            String.format(
+                                                Locale.US,
+                                                "%s · %.1f × %.1f × %.1f мм",
+                                                model.source.sourceFormat,
+                                                model.sourceBounds.width,
+                                                model.sourceBounds.depth,
+                                                model.sourceBounds.height,
+                                            ),
+                                            color = Muted,
+                                            fontSize = 12.sp,
+                                        )
+                                        Text(
+                                            buildString {
+                                                model.source.triangleCount?.let { append("Треугольников: $it") }
+                                                model.source.originalSizeBytes?.let { size ->
+                                                    if (isNotEmpty()) append(" · ")
+                                                    append(formatFileSize(size))
+                                                }
+                                            }.ifBlank { formatFileSize(model.source.file.length()) },
+                                            color = Muted,
+                                            fontSize = 11.sp,
+                                        )
+                                        if (isSelected) {
+                                            Text("Выбран", color = Accent, fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
                             Text(
                                 if (generatedGcode != null) "Состояние: нарезка готова" else "Состояние: модель загружена",
                                 color = Accent,
@@ -538,15 +829,15 @@ fun FeresaSlicerApp() {
                             enabled = !isWorking,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Text(if (sourceFile == null) "Загрузить STL" else "Заменить STL")
+                            Text(if (plateWorkspace.objects.isEmpty()) "Загрузить модель" else "Добавить модель")
                         }
-                        if (sourceFile != null) {
+                        if (plateWorkspace.selectedObject != null) {
                             TextButton(
                                 onClick = removeCurrentModel,
                                 enabled = !isWorking,
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
-                                Text("Удалить файл")
+                                Text("Удалить выбранную модель")
                             }
                         }
                     }
@@ -575,6 +866,9 @@ fun FeresaSlicerApp() {
                             mode = ViewerMode.MODEL,
                             darkTheme = useDarkTheme,
                             cameraResetRequest = cameraResetRequest,
+                            modelObjects = viewerModelObjects,
+                            selectedObjectId = plateWorkspace.selectedObjectId?.value,
+                            onObjectSelected = ::applyViewerSelection,
                             onSceneState = { viewerSceneState = it },
                             onError = { viewerMessage = it },
                             viewerHeight = 650.dp,
@@ -599,6 +893,9 @@ fun FeresaSlicerApp() {
                                 mode = ViewerMode.MODEL,
                                 darkTheme = useDarkTheme,
                                 cameraResetRequest = cameraResetRequest,
+                                modelObjects = viewerModelObjects,
+                                selectedObjectId = plateWorkspace.selectedObjectId?.value,
+                                onObjectSelected = ::applyViewerSelection,
                                 onSceneState = { viewerSceneState = it },
                                 onError = { viewerMessage = it },
                                 modifier = Modifier
@@ -607,47 +904,37 @@ fun FeresaSlicerApp() {
                             )
                             ModelContextRail(
                                 section = modelWorkspaceSection,
-                                hasModel = selectedFile != null,
+                                hasModel = hasPlateModels,
                                 hasGcode = generatedGcode != null,
                                 isWorking = isWorking,
                                 onImportModel = { filePicker.launch(arrayOf("*/*")) },
                                 onRemoveModel = removeCurrentModel,
-                                onModelFromPhoto = {
-                                    viewerMessage = "Создание 3D-модели по фото пока недоступно"
-                                },
-                                onCalibration = { destination = AppDestination.PRINTER },
-                                onImportProfiles = { destination = AppDestination.PRINT },
-                                onExportProfiles = {
-                                    viewerMessage = "Экспорт профилей будет добавлен в следующей версии"
-                                },
                                 onResetCamera = { cameraResetRequest += 1 },
                                 onShowModel = { viewerMode = ViewerMode.MODEL },
                                 onShowToolpath = { viewerMode = ViewerMode.TOOLPATH },
                                 onCenterModel = {
-                                    modelTransform = modelTransform.copy(
-                                        positionX = bedWidth / 2.0,
-                                        positionY = bedDepth / 2.0,
-                                    )
-                                    viewerSceneState = null
-                                    generatedGcode = null
-                                    report = null
-                                    viewerMode = ViewerMode.MODEL
+                                    plateWorkspace.selectedObjectId?.let { selectedId ->
+                                        commitPlateWorkspace(
+                                            plateWorkspace.center(
+                                                selectedId,
+                                                RectangularBuildVolume(bedWidth, bedDepth, printableHeight),
+                                            ),
+                                            "Модель размещена по центру",
+                                        )
+                                    }
                                 },
                                 onRotateModel = {
-                                    modelTransform = modelTransform.copy(
-                                        rotationDegrees = (modelTransform.rotationDegrees + 90.0) % 360.0,
-                                    )
-                                    viewerSceneState = null
-                                    generatedGcode = null
-                                    report = null
-                                    viewerMode = ViewerMode.MODEL
+                                    plateWorkspace.selectedObjectId?.let { selectedId ->
+                                        commitPlateWorkspace(
+                                            plateWorkspace.rotate(selectedId, PlateAxis.Z, 90.0).moveToBed(selectedId),
+                                            "Модель повёрнута на 90°",
+                                        )
+                                    }
                                 },
                                 onResetScale = {
-                                    modelTransform = modelTransform.copy(scale = 1.0)
-                                    viewerSceneState = null
-                                    generatedGcode = null
-                                    report = null
-                                    viewerMode = ViewerMode.MODEL
+                                    updateSelectedTransform {
+                                        it.copy(scale = 1.0, scaleX = 1.0, scaleY = 1.0, scaleZ = 1.0)
+                                    }
                                 },
                                 onSlice = sliceCurrentModel,
                                 onSendToPrinter = { showSendToPrinter = true },
@@ -690,88 +977,257 @@ fun FeresaSlicerApp() {
                         }
 
                         Spacer(Modifier.height(14.dp))
-                        TransformSlider(
-                            label = "Позиция X",
-                            value = modelTransform.positionX,
-                            range = 0f..bedWidth.toFloat(),
-                            suffix = "мм",
-                            onValueChange = { value ->
-                                modelTransform = modelTransform.copy(positionX = value)
-                                viewerSceneState = null
-                                generatedGcode = null
-                                report = null
-                                viewerMode = ViewerMode.MODEL
-                            },
-                        )
-                        TransformSlider(
-                            label = "Позиция Y",
-                            value = modelTransform.positionY,
-                            range = 0f..bedDepth.toFloat(),
-                            suffix = "мм",
-                            onValueChange = { value ->
-                                modelTransform = modelTransform.copy(positionY = value)
-                                viewerSceneState = null
-                                generatedGcode = null
-                                report = null
-                                viewerMode = ViewerMode.MODEL
-                            },
-                        )
-                        TransformSlider(
-                            label = "Поворот",
-                            value = modelTransform.rotationDegrees,
-                            range = 0f..360f,
-                            suffix = "°",
-                            onValueChange = { value ->
-                                modelTransform = modelTransform.copy(rotationDegrees = value)
-                                viewerSceneState = null
-                                generatedGcode = null
-                                report = null
-                                viewerMode = ViewerMode.MODEL
-                            },
-                        )
-                        TransformSlider(
-                            label = "Масштаб",
-                            value = modelTransform.scale,
-                            range = 0.1f..3f,
-                            suffix = "×",
-                            decimals = 2,
-                            onValueChange = { value ->
-                                modelTransform = modelTransform.copy(scale = value)
-                                viewerSceneState = null
-                                generatedGcode = null
-                                report = null
-                                viewerMode = ViewerMode.MODEL
-                            },
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    modelTransform = modelTransform.copy(
-                                        positionX = bedWidth / 2.0,
-                                        positionY = bedDepth / 2.0,
-                                    )
-                                    viewerSceneState = null
-                                    generatedGcode = null
-                                    report = null
-                                    viewerMode = ViewerMode.MODEL
+                        val selectedModel = selectedPlateObject
+                        if (selectedModel == null) {
+                            Text("Выберите модель на столе", color = Muted)
+                        } else {
+                            val selectedTransform = selectedModel.transform
+                            val selectedId = selectedModel.id
+                            val buildVolume = RectangularBuildVolume(bedWidth, bedDepth, printableHeight)
+                            val selectedValidation = plateWorkspace.validate(buildVolume).objectResult(selectedId)
+                            val selectedCollisions = plateWorkspace.collisions().count { collision ->
+                                collision.firstObjectId == selectedId || collision.secondObjectId == selectedId
+                            }
+
+                            Text(selectedModel.sourceName, fontWeight = FontWeight.SemiBold)
+                            if (selectedCollisions > 0) {
+                                Text(
+                                    "Пересечение габаритов с другими моделями: $selectedCollisions",
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontSize = 12.sp,
+                                )
+                            }
+                            if (selectedValidation?.insideBuildVolume == false) {
+                                Text(
+                                    "Объект выходит за пределы области печати",
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontSize = 12.sp,
+                                )
+                            }
+                            modelActionMessage?.let { message ->
+                                Text(message, color = Accent, fontSize = 12.sp)
+                            }
+
+                            Spacer(Modifier.height(10.dp))
+                            Text("Положение XYZ", fontWeight = FontWeight.SemiBold)
+                            TransformSlider(
+                                label = "Позиция X",
+                                value = selectedTransform.positionXmm,
+                                range = 0f..bedWidth.toFloat(),
+                                suffix = "мм",
+                                onValueChange = { value ->
+                                    updateSelectedTransform { it.copy(positionXmm = value) }
                                 },
-                                modifier = Modifier.weight(1f),
-                            ) { Text("По центру") }
-                            OutlinedButton(
-                                onClick = {
-                                    modelTransform = modelTransform.copy(
-                                        rotationDegrees = (modelTransform.rotationDegrees + 90.0) % 360.0,
-                                    )
-                                    viewerSceneState = null
-                                    generatedGcode = null
-                                    report = null
-                                    viewerMode = ViewerMode.MODEL
+                            )
+                            TransformSlider(
+                                label = "Позиция Y",
+                                value = selectedTransform.positionYmm,
+                                range = 0f..bedDepth.toFloat(),
+                                suffix = "мм",
+                                onValueChange = { value ->
+                                    updateSelectedTransform { it.copy(positionYmm = value) }
                                 },
-                                modifier = Modifier.weight(1f),
-                            ) { Text("Повернуть 90°") }
+                            )
+                            TransformSlider(
+                                label = "Позиция Z",
+                                value = selectedTransform.positionZmm,
+                                range = 0f..printableHeight.toFloat(),
+                                suffix = "мм",
+                                onValueChange = { value ->
+                                    updateSelectedTransform { it.copy(positionZmm = value) }
+                                },
+                            )
+
+                            Spacer(Modifier.height(6.dp))
+                            Text("Поворот XYZ", fontWeight = FontWeight.SemiBold)
+                            TransformSlider(
+                                label = "Поворот X",
+                                value = selectedTransform.rotationXDegrees,
+                                range = 0f..360f,
+                                suffix = "°",
+                                onValueChange = { value ->
+                                    updateSelectedTransform { it.copy(rotationXDegrees = value) }
+                                },
+                            )
+                            TransformSlider(
+                                label = "Поворот Y",
+                                value = selectedTransform.rotationYDegrees,
+                                range = 0f..360f,
+                                suffix = "°",
+                                onValueChange = { value ->
+                                    updateSelectedTransform { it.copy(rotationYDegrees = value) }
+                                },
+                            )
+                            TransformSlider(
+                                label = "Поворот Z",
+                                value = selectedTransform.rotationZDegrees,
+                                range = 0f..360f,
+                                suffix = "°",
+                                onValueChange = { value ->
+                                    updateSelectedTransform { it.copy(rotationDegrees = value) }
+                                },
+                            )
+
+                            Spacer(Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text("Сохранять пропорции", fontWeight = FontWeight.SemiBold)
+                                Switch(checked = linkScaleAxes, onCheckedChange = { linkScaleAxes = it })
+                            }
+                            if (linkScaleAxes) {
+                                TransformSlider(
+                                    label = "Масштаб",
+                                    value = selectedTransform.effectiveScaleX,
+                                    range = 0.1f..3f,
+                                    suffix = "×",
+                                    decimals = 2,
+                                    onValueChange = { value ->
+                                        updateSelectedTransform {
+                                            it.copy(
+                                                scale = value,
+                                                scaleX = 1.0,
+                                                scaleY = 1.0,
+                                                scaleZ = 1.0,
+                                            )
+                                        }
+                                    },
+                                )
+                            } else {
+                                listOf(
+                                    Triple("Масштаб X", selectedTransform.effectiveScaleX, PlateAxis.X),
+                                    Triple("Масштаб Y", selectedTransform.effectiveScaleY, PlateAxis.Y),
+                                    Triple("Масштаб Z", selectedTransform.effectiveScaleZ, PlateAxis.Z),
+                                ).forEach { (label, value, axis) ->
+                                    TransformSlider(
+                                        label = label,
+                                        value = value,
+                                        range = 0.1f..3f,
+                                        suffix = "×",
+                                        decimals = 2,
+                                        onValueChange = { nextValue ->
+                                            commitPlateWorkspace(
+                                                plateWorkspace.setAxisScale(selectedId, axis, nextValue),
+                                            )
+                                        },
+                                    )
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        commitPlateWorkspace(
+                                            plateWorkspace.center(selectedId, buildVolume),
+                                            "Модель размещена по центру",
+                                        )
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("По центру") }
+                                OutlinedButton(
+                                    onClick = {
+                                        commitPlateWorkspaceOnExactBed(
+                                            updated = plateWorkspace,
+                                            objectId = selectedId,
+                                            message = "Модель опущена на стол",
+                                        )
+                                    },
+                                    enabled = !isWorking,
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("На стол") }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        commitPlateWorkspaceOnExactBed(
+                                            updated = plateWorkspace.rotate(selectedId, PlateAxis.Z, 90.0),
+                                            objectId = selectedId,
+                                            message = "Модель повёрнута на 90°",
+                                        )
+                                    },
+                                    enabled = !isWorking,
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("Повернуть Z 90°") }
+                                OutlinedButton(
+                                    onClick = {
+                                        scope.launch {
+                                            isWorking = true
+                                            val workspaceSnapshot = plateWorkspace
+                                            runCatching {
+                                                withContext(Dispatchers.Default) {
+                                                    val orientation = StlPlateComposer
+                                                        .suggestLayFlat(selectedModel.source.file)
+                                                        ?: error("Не удалось найти подходящую грань")
+                                                    workspaceSnapshot.updateTransform(selectedId) {
+                                                        it.copy(
+                                                            rotationXDegrees = orientation.rotationXDegrees,
+                                                            rotationYDegrees = orientation.rotationYDegrees,
+                                                            rotationDegrees = orientation.rotationZDegrees,
+                                                            positionZmm = orientation.positionZmm,
+                                                        )
+                                                    }.moveObjectToExactBed(selectedId)
+                                                }
+                                            }.onSuccess { exactWorkspace ->
+                                                commitPlateWorkspace(
+                                                    exactWorkspace,
+                                                    "Модель положена крупнейшей гранью",
+                                                )
+                                            }.onFailure { error ->
+                                                errorMessage = error.message ?: "Не удалось положить модель гранью"
+                                            }
+                                            isWorking = false
+                                        }
+                                    },
+                                    enabled = !isWorking,
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("Положить гранью") }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        val arranged = plateWorkspace
+                                            .duplicate(selectedId)
+                                            .autoArrange(buildVolume)
+                                        commitPlateWorkspace(
+                                            arranged.workspace,
+                                            if (arranged.allPlaced) "Создана копия модели" else "Копия создана; не всё поместилось на стол",
+                                        )
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("Дублировать") }
+                                OutlinedButton(
+                                    onClick = {
+                                        renameObjectId = selectedId
+                                        renameObjectValue = selectedModel.sourceName
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("Переименовать") }
+                            }
+                            Button(
+                                onClick = {
+                                    val arranged = plateWorkspace.autoArrange(buildVolume)
+                                    commitPlateWorkspace(
+                                        arranged.workspace,
+                                        if (arranged.allPlaced) {
+                                            "Модели автоматически расставлены"
+                                        } else {
+                                            "Не поместилось моделей: ${arranged.unplacedObjectIds.size}"
+                                        },
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("Автоматически расставить") }
                         }
                     }
                 }
@@ -805,24 +1261,42 @@ fun FeresaSlicerApp() {
                         onPrintDetailLevelChange = { printDetailLevel = it },
                         onPrintSettingsCategoryChange = { printSettingsCategory = it },
                         onPrintSettingsChange = {
+                            val previous = printSettings.toOrcaProcessSettingsPayload().asMap()
+                            val next = it.toOrcaProcessSettingsPayload().asMap()
+                            dirtyProcessSettingKeys = dirtyProcessSettingKeys + next.keys.filter { key ->
+                                previous[key] != next[key]
+                            }
                             printSettings = it
                             generatedGcode = null
                             report = null
                             viewerMode = ViewerMode.MODEL
                         },
                         nozzleDiameter = nozzleDiameter,
-                        onNozzleDiameter = { nozzleDiameter = it },
+                        onNozzleDiameter = {
+                            nozzleDiameter = it
+                            invalidatePlateSlice()
+                        },
                         filamentDiameter = filamentDiameter,
-                        onFilamentDiameter = { filamentDiameter = it },
+                        onFilamentDiameter = {
+                            filamentDiameter = it
+                            invalidatePlateSlice()
+                        },
                         nozzleTemperature = nozzleTemperature,
-                        onNozzleTemperature = { nozzleTemperature = it },
+                        onNozzleTemperature = {
+                            nozzleTemperature = it
+                            invalidatePlateSlice()
+                        },
                         bedTemperature = bedTemperature,
-                        onBedTemperature = { bedTemperature = it },
+                        onBedTemperature = {
+                            bedTemperature = it
+                            invalidatePlateSlice()
+                        },
                         bedWidth = bedWidth,
                         bedDepth = bedDepth,
                         printableHeight = printableHeight,
                         printerFirmware = printerFirmware,
-                        systemCatalog = systemPrinterCatalog,
+                        systemCatalog = compatibleSystemPrinterCatalog,
+                        systemCatalogLoading = isSystemCatalogLoading,
                         cloudState = cloudProfileState,
                         isOrcaSignedIn = authState is OrcaAuthState.SignedIn,
                         printerProfileName = printerProfileName,
@@ -849,70 +1323,184 @@ fun FeresaSlicerApp() {
                         onSyncCloud = authViewModel::syncProfiles,
                         onOpenApp = { destination = AppDestination.APP },
                         onApplyCloudProfile = { profile ->
-                            when (profile.type) {
-                                OrcaProfileType.PRINTER -> {
-                                    printerProfileName = profile.name
-                                    activeConnectionProfileId = profile.id
-                                    firstProfileSetting(profile, "nozzle_diameter")?.let { nozzleDiameter = it }
-                                    printerConnectionStatus = profile.printerConnection()?.let {
-                                        "Подключение загружено из OrcaCloud"
+                            runCatching {
+                                val presetCatalog = systemPresetCatalog
+                                    ?: error("Системные профили Orca ещё загружаются")
+                                resolveProfileSettingsForUi(
+                                    catalog = presetCatalog,
+                                    profile = profile,
+                                    availableProfiles = cloudProfileState.profiles,
+                                )
+                            }.onSuccess { resolved ->
+                                when (profile.type) {
+                                    OrcaProfileType.PRINTER -> {
+                                        printerProfileName = profile.name
+                                        activeConnectionProfileId = profile.id
+                                        activeSystemPrinterProfile = null
+                                        firstProfileSetting(resolved, "nozzle_diameter")
+                                            ?.let { nozzleDiameter = it }
+                                        printerDimensions(resolved)?.let { (width, depth) ->
+                                            bedWidth = width
+                                            bedDepth = depth
+                                            plateWorkspace.selectedObjectId?.let { selectedId ->
+                                                plateWorkspace = plateWorkspace.updateTransform(selectedId) {
+                                                    it.copy(positionXmm = width / 2.0, positionYmm = depth / 2.0)
+                                                }
+                                            }
+                                        }
+                                        firstProfileSetting(
+                                            resolved,
+                                            "printable_height",
+                                            "max_print_height",
+                                        )
+                                            ?.toDoubleOrNull()
+                                            ?.takeIf { it > 0.0 }
+                                            ?.let { printableHeight = it }
+                                        firstProfileSetting(resolved, "gcode_flavor")
+                                            ?.let { printerFirmware = it }
+                                        printerConnectionStatus = profile.printerConnection()?.let {
+                                            "Подключение загружено из OrcaCloud"
+                                        }
                                     }
+                                    OrcaProfileType.FILAMENT -> {
+                                        filamentProfileName = profile.name
+                                        firstProfileSetting(resolved, "filament_diameter")
+                                            ?.let { filamentDiameter = it }
+                                        firstProfileSetting(
+                                            resolved,
+                                            "nozzle_temperature",
+                                            "nozzle_temperature_initial_layer",
+                                        )?.let { nozzleTemperature = it }
+                                        firstProfileSetting(
+                                            resolved,
+                                            "hot_plate_temp",
+                                            "textured_plate_temp",
+                                            "cool_plate_temp",
+                                        )?.let { bedTemperature = it }
+                                    }
+                                    OrcaProfileType.PROCESS -> {
+                                        processProfileName = profile.name
+                                        activeSystemProcessProfile = null
+                                        printSettings = printSettings.applyOrcaSettings(resolved)
+                                        dirtyProcessSettingKeys = if (
+                                            resolved["support_type"].orEmpty().contains("(manual)")
+                                        ) {
+                                            setOf("support_type")
+                                        } else {
+                                            emptySet()
+                                        }
+                                        generatedGcode = null
+                                        report = null
+                                        viewerMode = ViewerMode.MODEL
+                                    }
+                                    OrcaProfileType.OTHER -> Unit
                                 }
-                                OrcaProfileType.FILAMENT -> {
-                                    filamentProfileName = profile.name
-                                    firstProfileSetting(profile, "filament_diameter")?.let { filamentDiameter = it }
-                                    firstProfileSetting(
-                                        profile,
-                                        "nozzle_temperature",
-                                        "nozzle_temperature_initial_layer",
-                                    )?.let { nozzleTemperature = it }
-                                    firstProfileSetting(
-                                        profile,
-                                        "hot_plate_temp",
-                                        "textured_plate_temp",
-                                        "cool_plate_temp",
-                                    )?.let { bedTemperature = it }
-                                }
-                                OrcaProfileType.PROCESS -> {
-                                    processProfileName = profile.name
-                                    printSettings = printSettings.applyOrcaProfile(profile)
-                                    generatedGcode = null
-                                    report = null
-                                    viewerMode = ViewerMode.MODEL
-                                }
-                                OrcaProfileType.OTHER -> Unit
+                                if (profile.type != OrcaProfileType.OTHER) invalidatePlateSlice()
+                            }.onFailure { error ->
+                                errorMessage = error.message ?: "Не удалось применить профиль Orca"
                             }
                         },
                         onApplySystemProfile = { profile ->
-                            printerProfileName = profile.name
-                            nozzleDiameter = formatProfileNumber(profile.nozzleDiameter)
-                            bedWidth = profile.bedWidth
-                            bedDepth = profile.bedDepth
-                            printableHeight = profile.printableHeight.takeIf { it > 0.0 } ?: printableHeight
-                            printerFirmware = profile.gcodeFlavor
-                            if (profile.defaultPrintProfile.isNotBlank()) {
-                                processProfileName = profile.defaultPrintProfile
-                                Regex("^(\\d+(?:\\.\\d+)?)mm")
-                                    .find(profile.defaultPrintProfile)
-                                    ?.groupValues
-                                    ?.getOrNull(1)
-                                    ?.let { printSettings = printSettings.copy(layerHeight = it) }
+                            runCatching {
+                                val presetCatalog = systemPresetCatalog
+                                    ?: error("Системные профили Orca ещё загружаются")
+                                val contextHint = "${profile.vendor} ${profile.family} ${profile.model}"
+                                val bundledPrinter = presetCatalog.bundledProfile(
+                                    type = OrcaProfileType.PRINTER,
+                                    name = profile.name,
+                                    contextHint = contextHint,
+                                )
+                                val printerSettings = resolveProfileSettingsForUi(
+                                    catalog = presetCatalog,
+                                    profile = bundledPrinter,
+                                    availableProfiles = listOf(bundledPrinter),
+                                )
+                                val bundledProcess = profile.defaultPrintProfile
+                                    .takeIf(String::isNotBlank)
+                                    ?.let { processName ->
+                                        runCatching {
+                                            presetCatalog.bundledProfile(
+                                                type = OrcaProfileType.PROCESS,
+                                                name = processName,
+                                                contextHint = "$contextHint ${profile.name}",
+                                            )
+                                        }.getOrNull()
+                                    }
+                                val processSettings = bundledProcess?.let { process ->
+                                    resolveProfileSettingsForUi(
+                                        catalog = presetCatalog,
+                                        profile = process,
+                                        availableProfiles = listOf(process),
+                                    )
+                                }
+                                Triple(bundledPrinter, printerSettings, bundledProcess to processSettings)
+                            }.onSuccess { (bundledPrinter, resolvedPrinter, process) ->
+                                printerProfileName = profile.name
+                                activeConnectionProfileId = null
+                                activeSystemPrinterProfile = bundledPrinter
+                                firstProfileSetting(resolvedPrinter, "nozzle_diameter")
+                                    ?.let { nozzleDiameter = it }
+                                    ?: run { nozzleDiameter = formatProfileNumber(profile.nozzleDiameter) }
+                                val dimensions = printerDimensions(resolvedPrinter)
+                                    ?: (profile.bedWidth to profile.bedDepth)
+                                bedWidth = dimensions.first
+                                bedDepth = dimensions.second
+                                firstProfileSetting(
+                                    resolvedPrinter,
+                                    "printable_height",
+                                    "max_print_height",
+                                )
+                                    ?.toDoubleOrNull()
+                                    ?.takeIf { it > 0.0 }
+                                    ?.let { printableHeight = it }
+                                    ?: run {
+                                        printableHeight = profile.printableHeight
+                                            .takeIf { it > 0.0 }
+                                            ?: printableHeight
+                                    }
+                                firstProfileSetting(resolvedPrinter, "gcode_flavor")
+                                    ?.let { printerFirmware = it }
+                                    ?: run { printerFirmware = profile.gcodeFlavor }
+
+                                activeSystemProcessProfile = process.first
+                                if (process.first != null && process.second != null) {
+                                    processProfileName = process.first!!.name
+                                    printSettings = printSettings.applyOrcaSettings(process.second!!)
+                                    dirtyProcessSettingKeys = if (
+                                        process.second!!["support_type"].orEmpty().contains("(manual)")
+                                    ) {
+                                        setOf("support_type")
+                                    } else {
+                                        emptySet()
+                                    }
+                                } else {
+                                    processProfileName = "Standard quality"
+                                    printSettings = PrintSettingsState()
+                                    dirtyProcessSettingKeys = emptySet()
+                                }
+                                plateWorkspace.selectedObjectId?.let { selectedId ->
+                                    plateWorkspace = plateWorkspace.updateTransform(selectedId) {
+                                        it.copy(positionXmm = bedWidth / 2.0, positionYmm = bedDepth / 2.0)
+                                    }
+                                }
+                                invalidatePlateSlice()
+                            }.onFailure { error ->
+                                errorMessage = error.message ?: "Не удалось загрузить системный профиль Orca"
                             }
-                            modelTransform = modelTransform.copy(
-                                positionX = profile.bedWidth / 2.0,
-                                positionY = profile.bedDepth / 2.0,
-                            )
-                            generatedGcode = null
-                            report = null
-                            viewerSceneState = null
-                            viewerMode = ViewerMode.MODEL
                         },
                     )
 
                     AppDestination.APP -> {
                         SectionCard(title = "Настройки приложения") {
                             Text("Язык интерфейса", fontWeight = FontWeight.SemiBold)
-                            Text("Русский", color = Muted, fontSize = 13.sp)
+                            Spacer(Modifier.height(8.dp))
+                            LanguageSelector(
+                                selected = uiLanguage,
+                                onSelect = { language ->
+                                    uiLanguage = language
+                                    themePreferences.edit().putString(LanguageModeKey, language.name).apply()
+                                },
+                            )
                             Spacer(Modifier.height(10.dp))
                             Text("Тема", fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.height(8.dp))
@@ -985,6 +1573,40 @@ fun FeresaSlicerApp() {
             }
             }
         }
+        }
+
+    renameObjectId?.let { objectId ->
+        AlertDialog(
+            onDismissRequest = { renameObjectId = null },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        runCatching { plateWorkspace.rename(objectId, renameObjectValue) }
+                            .onSuccess { updated ->
+                                commitPlateWorkspace(updated, "Модель переименована")
+                                renameObjectId = null
+                            }
+                            .onFailure { error ->
+                                errorMessage = error.message ?: "Не удалось переименовать модель"
+                            }
+                    },
+                    enabled = renameObjectValue.isNotBlank(),
+                ) { Text("Сохранить") }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameObjectId = null }) { Text("Отмена") }
+            },
+            title = { Text("Переименовать модель") },
+            text = {
+                OutlinedTextField(
+                    value = renameObjectValue,
+                    onValueChange = { renameObjectValue = it },
+                    label = { Text("Название") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+        )
     }
 
     if (showLicense) {
@@ -1063,7 +1685,7 @@ fun FeresaSlicerApp() {
                     Text(
                         "${connection.printerName}\n${connection.hostType.label} · ${connection.host}\n\n" +
                             "G-code будет загружен, после чего печать начнётся сразу. " +
-                            "Текущий слайсер экспериментальный — убедитесь, что принтер готов.",
+                            "Проверьте выбранные профили и убедитесь, что принтер готов.",
                     )
                 } else {
                     Text(
@@ -1084,6 +1706,51 @@ fun FeresaSlicerApp() {
             title = { Text(result.title) },
             text = { Text(result.message) },
         )
+    }
+    }
+}
+
+@Composable
+private fun LanguageSelector(
+    selected: UiLanguage,
+    onSelect: (UiLanguage) -> Unit,
+) {
+    val labels = mapOf(
+        UiLanguage.RUSSIAN to "Русский",
+        UiLanguage.ENGLISH to "Английский",
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        UiLanguage.entries.forEach { language ->
+            val isSelected = language == selected
+            androidx.compose.material3.Surface(
+                color = if (isSelected) {
+                    MaterialTheme.colorScheme.primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
+                },
+                contentColor = if (isSelected) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { onSelect(language) },
+            ) {
+                Text(
+                    text = labels.getValue(language),
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 11.dp),
+                    textAlign = TextAlign.Center,
+                    fontSize = 12.sp,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    maxLines = 1,
+                )
+            }
+        }
     }
 }
 
@@ -1198,10 +1865,6 @@ private fun ModelContextRail(
     isWorking: Boolean,
     onImportModel: () -> Unit,
     onRemoveModel: () -> Unit,
-    onModelFromPhoto: () -> Unit,
-    onCalibration: () -> Unit,
-    onImportProfiles: () -> Unit,
-    onExportProfiles: () -> Unit,
     onResetCamera: () -> Unit,
     onShowModel: () -> Unit,
     onShowToolpath: () -> Unit,
@@ -1217,10 +1880,6 @@ private fun ModelContextRail(
         ModelWorkspaceSection.FILE -> listOf(
             ModelRailAction("Модели", R.drawable.ic_nav_model, onClick = onImportModel),
             ModelRailAction("Удалить", R.drawable.ic_nav_project, hasModel, onRemoveModel),
-            ModelRailAction("Из фото", R.drawable.ic_workspace_camera, onClick = onModelFromPhoto),
-            ModelRailAction("Калибр.", R.drawable.ic_nav_print, onClick = onCalibration),
-            ModelRailAction("Импорт проф.", R.drawable.ic_nav_profiles, onClick = onImportProfiles),
-            ModelRailAction("Экспорт проф.", R.drawable.ic_nav_cloud, onClick = onExportProfiles),
         )
 
         ModelWorkspaceSection.VIEW -> listOf(
@@ -1333,6 +1992,7 @@ private fun ProfilesScreen(
     printableHeight: Double,
     printerFirmware: String,
     systemCatalog: OrcaSystemPrinterCatalog,
+    systemCatalogLoading: Boolean,
     cloudState: OrcaProfileSyncState,
     isOrcaSignedIn: Boolean,
     printerProfileName: String,
@@ -1428,6 +2088,7 @@ private fun ProfilesScreen(
         ProfileSection.PRINTER -> {
             OrcaSystemCatalogCard(
                 catalog = systemCatalog,
+                isLoading = systemCatalogLoading,
                 activeName = printerProfileName,
                 onApply = onApplySystemProfile,
             )
@@ -1485,6 +2146,7 @@ private fun ProfilesScreen(
 @Composable
 private fun OrcaSystemCatalogCard(
     catalog: OrcaSystemPrinterCatalog,
+    isLoading: Boolean,
     activeName: String,
     onApply: (OrcaSystemPrinterProfile) -> Unit,
 ) {
@@ -1508,6 +2170,10 @@ private fun OrcaSystemCatalogCard(
         .take(12)
 
     SectionCard(title = "Каталог принтеров OrcaSlicer") {
+        if (isLoading) {
+            Text("Загрузка встроенного каталога…", color = Muted)
+            return@SectionCard
+        }
         if (catalog.printers.isEmpty()) {
             Text("Не удалось открыть встроенный каталог.", color = MaterialTheme.colorScheme.error)
             return@SectionCard
@@ -1584,6 +2250,7 @@ private fun OrcaCloudProfilesCard(
     onOpenApp: () -> Unit,
     onApply: (OrcaCloudProfile) -> Unit,
 ) {
+    var showAllProfiles by remember(requestedType) { mutableStateOf(false) }
     SectionCard(title = "Профили OrcaCloud") {
         if (state.isLoading) {
             Text(
@@ -1607,7 +2274,8 @@ private fun OrcaCloudProfilesCard(
                     fontSize = 12.sp,
                 )
                 Spacer(Modifier.height(8.dp))
-                profiles.take(8).forEach { profile ->
+                val visibleProfiles = if (showAllProfiles) profiles else profiles.take(8)
+                visibleProfiles.forEach { profile ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1644,7 +2312,12 @@ private fun OrcaCloudProfilesCard(
                     }
                 }
                 if (profiles.size > 8) {
-                    Text("Ещё профилей: ${profiles.size - 8}", color = Muted, fontSize = 12.sp)
+                    TextButton(
+                        onClick = { showAllProfiles = !showAllProfiles },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (showAllProfiles) "Свернуть список" else "Показать все (${profiles.size})")
+                    }
                 }
             }
             isSignedIn && !state.isLoading -> Text("В OrcaCloud нет пользовательских профилей этого типа.", color = Muted)
@@ -1682,7 +2355,7 @@ private fun StatusCard() {
         ) {
             Column {
                 Text("Локальный слайсер бесплатный", fontWeight = FontWeight.SemiBold)
-                Text("Синхронизация профилей будет доступна по подписке.", color = Muted, fontSize = 13.sp)
+                Text("Синхронизация профилей OrcaCloud доступна после входа.", color = Muted, fontSize = 13.sp)
             }
         }
     }
@@ -1833,6 +2506,10 @@ private data class GcodePreviewData(
     val motions: List<GcodeMotion>,
 )
 
+private fun GcodePreviewData.layerZ(layer: Int): Double? =
+    motions.firstOrNull { motion -> motion.layer == layer && motion.extrusion && motion.z > 0.0 }?.z
+        ?: motions.firstOrNull { motion -> motion.layer == layer && motion.z > 0.0 }?.z
+
 private val GcodePreviewWord = Regex(
     "([XYZEF])\\s*(-?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?)",
     RegexOption.IGNORE_CASE,
@@ -1845,6 +2522,7 @@ private fun parseGcodePreview(file: File): GcodePreviewData {
     var e = 0.0
     var feedRate = 0.0
     var layer = 0
+    var layerChangeSeen = false
     var absoluteAxes = true
     var absoluteExtrusion = true
     var lineCount = 0
@@ -1853,12 +2531,19 @@ private fun parseGcodePreview(file: File): GcodePreviewData {
     file.useLines { lines ->
         lines.forEach { sourceLine ->
             lineCount += 1
-            Regex(";\\s*LAYER\\s*:\\s*(\\d+)", RegexOption.IGNORE_CASE)
+            val explicitLayer = Regex(";\\s*LAYER\\s*:\\s*(\\d+)", RegexOption.IGNORE_CASE)
                 .find(sourceLine)
                 ?.groupValues
                 ?.getOrNull(1)
                 ?.toIntOrNull()
-                ?.let { layer = it }
+            if (explicitLayer != null) {
+                layer = explicitLayer
+            } else if (Regex(";\\s*(?:LAYER_CHANGE|CHANGE_LAYER)\\b", RegexOption.IGNORE_CASE)
+                    .containsMatchIn(sourceLine)
+            ) {
+                if (layerChangeSeen) layer += 1
+                layerChangeSeen = true
+            }
 
             val command = sourceLine.substringBefore(';').trim().uppercase(Locale.US)
             when {
@@ -1875,7 +2560,7 @@ private fun parseGcodePreview(file: File): GcodePreviewData {
                     words["Z"]?.let { z = it }
                     words["E"]?.let { e = it }
                 }
-                command.matches(Regex("G0?0(?:\\s.*)?")) || command.matches(Regex("G0?1(?:\\s.*)?")) -> {
+                command.matches(Regex("G0?[0-3](?:\\s.*)?")) -> {
                     val words = GcodePreviewWord.findAll(command).associate {
                         it.groupValues[1].uppercase(Locale.US) to it.groupValues[2].toDouble()
                     }
@@ -1892,7 +2577,9 @@ private fun parseGcodePreview(file: File): GcodePreviewData {
                             y = nextY,
                             z = nextZ,
                             speedMmSeconds = feedRate / 60.0,
-                            extrusion = nextE > e + 0.0000001,
+                            extrusion = !command.startsWith("G0 ") &&
+                                !command.startsWith("G00 ") &&
+                                nextE > e + 0.0000001,
                             layer = layer,
                         )
                     }
@@ -1925,9 +2612,11 @@ private fun OrcaSliceWorkspace(
     showExtrusion: Boolean,
     showTravel: Boolean,
     progress: Float,
-    lineWidthMm: Double,
     layerHeightMm: Double,
     cameraResetRequest: Int,
+    modelObjects: List<ViewerModelObject>,
+    selectedObjectId: String?,
+    onObjectSelected: (ViewerObjectSelection) -> Unit,
     onSceneState: (ViewerSceneState) -> Unit,
     onViewerError: (String) -> Unit,
     onSlice: () -> Unit,
@@ -1942,6 +2631,7 @@ private fun OrcaSliceWorkspace(
     onSendToPrinter: () -> Unit,
     isSendingToPrinter: Boolean,
 ) {
+    val hasModels = modelObjects.isNotEmpty() || modelFile != null
     val successfulReport = report?.takeIf { it.success }
     val previewData = remember(gcodeFile, gcodeFile?.lastModified()) {
         gcodeFile?.takeIf { it.isFile }?.let { file -> runCatching { parseGcodePreview(file) }.getOrNull() }
@@ -1966,22 +2656,25 @@ private fun OrcaSliceWorkspace(
                     mode = ViewerMode.MODEL,
                     darkTheme = darkTheme,
                     cameraResetRequest = cameraResetRequest,
+                    modelObjects = modelObjects,
+                    selectedObjectId = selectedObjectId,
+                    onObjectSelected = onObjectSelected,
                     onSceneState = onSceneState,
                     onError = onViewerError,
                     viewerHeight = 430.dp,
                 )
                 Text(
-                    if (modelFile == null) {
+                    if (!hasModels) {
                         "Выберите STL во вкладке «Файл», затем вернитесь сюда для нарезки."
                     } else {
-                        "Модель готова. После нарезки здесь появится послойная траектория G-code."
+                        "Модели готовы. После нарезки здесь появится послойная траектория G-code."
                     },
                     color = Muted,
                     fontSize = 13.sp,
                 )
                 Button(
                     onClick = onSlice,
-                    enabled = modelFile != null && !isWorking,
+                    enabled = hasModels && !isWorking,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(if (isWorking) "Нарезка…" else "НАРЕЗАТЬ МОДЕЛЬ")
@@ -1993,7 +2686,8 @@ private fun OrcaSliceWorkspace(
     }
 
     var colorMenuExpanded by remember { mutableStateOf(false) }
-    var gcodeExpanded by remember(gcodeFile) { mutableStateOf(true) }
+    var gcodeExpanded by remember(gcodeFile) { mutableStateOf(false) }
+    var toolpathSelection by remember(gcodeFile) { mutableStateOf<ViewerToolpathSelection?>(null) }
     val lastLayer = (successfulReport.layers.toInt() - 1).coerceAtLeast(0)
     val sliderEnd = lastLayer.coerceAtLeast(1).toFloat()
     val visibleMotions = previewData?.motions?.filter { motion ->
@@ -2005,7 +2699,13 @@ private fun OrcaSliceWorkspace(
     } else {
         (visibleMotions.lastIndex * progress.coerceIn(0f, 1f)).roundToInt().coerceIn(0, visibleMotions.lastIndex)
     }
-    val selectedMotion = visibleMotions.getOrNull(selectedMotionIndex)
+    val displayedSegmentCount = toolpathSelection?.displayedSegmentCount
+        ?: if (visibleMotions.isEmpty()) 0 else selectedMotionIndex + 1
+    val eligibleSegmentCount = toolpathSelection?.eligibleSegmentCount ?: visibleMotions.size
+    val maximumLayerZ = previewData?.layerZ(maximumLayer)
+        ?: (maximumLayer + 1) * layerHeightMm
+    val minimumLayerZ = previewData?.layerZ(minimumLayer)
+        ?: (minimumLayer + 1) * layerHeightMm
 
     Card(
         colors = CardDefaults.cardColors(containerColor = Surface),
@@ -2080,7 +2780,11 @@ private fun OrcaSliceWorkspace(
                     showExtrusion = showExtrusion,
                     showTravel = showTravel,
                     cameraResetRequest = cameraResetRequest,
+                    modelObjects = modelObjects,
+                    selectedObjectId = selectedObjectId,
+                    onObjectSelected = onObjectSelected,
                     onSceneState = onSceneState,
+                    onToolpathSelection = { toolpathSelection = it },
                     onError = onViewerError,
                     viewerHeight = 410.dp,
                     modifier = Modifier
@@ -2094,7 +2798,7 @@ private fun OrcaSliceWorkspace(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
-                        "${maximumLayer + 1}\n${String.format(Locale.US, "%.2f", (maximumLayer + 1) * layerHeightMm)}",
+                        "${maximumLayer + 1}\n${String.format(Locale.US, "%.2f", maximumLayerZ)}",
                         textAlign = TextAlign.Center,
                         color = Accent,
                         fontSize = 11.sp,
@@ -2121,7 +2825,7 @@ private fun OrcaSliceWorkspace(
                         )
                     }
                     Text(
-                        "${minimumLayer + 1}\n${String.format(Locale.US, "%.2f", (minimumLayer + 1) * layerHeightMm)}",
+                        "${minimumLayer + 1}\n${String.format(Locale.US, "%.2f", minimumLayerZ)}",
                         textAlign = TextAlign.Center,
                         color = Accent,
                         fontSize = 11.sp,
@@ -2130,7 +2834,7 @@ private fun OrcaSliceWorkspace(
             }
 
             Text(
-                "Ход траектории ${if (visibleMotions.isEmpty()) 0 else selectedMotionIndex + 1} / ${visibleMotions.size}",
+                "Ход траектории $displayedSegmentCount / $eligibleSegmentCount",
                 color = Muted,
                 fontSize = 12.sp,
             )
@@ -2142,16 +2846,24 @@ private fun OrcaSliceWorkspace(
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            selectedMotion?.let { motion ->
+            toolpathSelection?.let { selection ->
+                val lineWidth = selection.lineWidthMm
+                    ?.let { String.format(Locale.US, "%.3f", it) }
+                    ?: "—"
+                val layerHeight = selection.layerHeightMm
+                    ?.let { String.format(Locale.US, "%.3f", it) }
+                    ?: "—"
                 Text(
                     String.format(
                         Locale.US,
-                        "X %.2f   Y %.2f   Z %.2f мм\nСкорость %.0f мм/с   Ширина %.2f мм",
-                        motion.x,
-                        motion.y,
-                        motion.z,
-                        motion.speedMmSeconds,
-                        lineWidthMm,
+                        "X %.2f   Y %.2f   Z %.2f мм\nСкорость %.0f мм/с · Тип: %s\nШирина %s мм · Высота слоя %s мм",
+                        selection.x,
+                        selection.y,
+                        selection.z,
+                        selection.speedMmSeconds,
+                        selection.lineTypeLabel,
+                        lineWidth,
+                        layerHeight,
                     ),
                     fontWeight = FontWeight.Medium,
                     fontSize = 13.sp,
@@ -2287,7 +2999,7 @@ private fun SlicePreviewControls(
     )
 
     PreviewVisibilityRow(
-        label = "Внешние периметры",
+        label = "Экструзия",
         color = Color(0xFFF26B38),
         checked = showExtrusion,
         onCheckedChange = onShowExtrusionChange,
@@ -2307,7 +3019,7 @@ private fun SlicePreviewControls(
     PreviewMetric("Сегменты", report.extrusionSegments.toString())
 
     Text(
-        "Сейчас мобильное ядро строит внешние периметры. Заполнение и поддержки появятся после подключения полного ядра OrcaSlicer.",
+        "Стены, оболочки, заполнение и поддержки построены движком OrcaSlicer согласно текущему профилю.",
         color = Muted,
         fontSize = 12.sp,
         modifier = Modifier.padding(top = 4.dp),
@@ -2376,11 +3088,7 @@ private fun ResultCard(report: SliceReport) {
                 "Расчётный расход филамента: ${String.format(Locale.US, "%.2f", report.filamentLengthMm / 1000.0)} м"
             )
             Spacer(Modifier.height(4.dp))
-            Text(
-                "Экспериментальный режим печатает только периметры. Проверьте G-code перед печатью.",
-                color = Muted,
-                fontSize = 12.sp,
-            )
+            Text("Нарезано движком OrcaSlicer", color = Muted, fontSize = 12.sp)
         }
     }
 }
@@ -2392,10 +3100,6 @@ private fun parseSettings(
     nozzleTemperature: String,
     bedTemperature: String,
     printSpeed: String,
-    infillDensity: String,
-    infillDirection: String,
-    infillSpeed: String,
-    infillPattern: String,
     bedWidth: Double,
     bedDepth: Double,
     transform: ModelTransform,
@@ -2407,10 +3111,6 @@ private fun parseSettings(
         nozzleTemperatureC = nozzleTemperature.toInt(),
         bedTemperatureC = bedTemperature.toInt(),
         printSpeedMmS = printSpeed.toDouble(),
-        infillDensityPercent = infillDensity.removeSuffix("%").toDouble(),
-        infillAngleDegrees = infillDirection.substringBefore(',').trim().toDouble(),
-        infillSpeedMmS = infillSpeed.toDouble(),
-        infillPattern = infillPattern,
         bedWidthMm = bedWidth,
         bedDepthMm = bedDepth,
         modelPositionXmm = transform.positionX,
@@ -2420,27 +3120,202 @@ private fun parseSettings(
     )
 }.getOrNull()
 
-private fun firstProfileSetting(profile: OrcaCloudProfile, vararg keys: String): String? =
-    keys.firstNotNullOfOrNull { key -> profile.setting(key) }
+private val UiResolvedProfileKeys: Set<String> by lazy {
+    PrintSettingsState().toOrcaProcessSettingsPayload().keys + setOf(
+        "nozzle_diameter",
+        "printable_area",
+        "bed_shape",
+        "printable_height",
+        "max_print_height",
+        "gcode_flavor",
+        "filament_diameter",
+        "nozzle_temperature",
+        "nozzle_temperature_initial_layer",
+        "hot_plate_temp",
+        "textured_plate_temp",
+        "cool_plate_temp",
+    )
+}
 
-private fun copyModelToCache(context: Context, uri: Uri): Pair<File, String> {
-    val displayName = context.contentResolver.query(
+private fun resolveProfileSettingsForUi(
+    catalog: OrcaSystemPresetCatalog,
+    profile: OrcaCloudProfile,
+    availableProfiles: List<OrcaCloudProfile>,
+): Map<String, String> {
+    val selected = when (profile.type) {
+        OrcaProfileType.PRINTER -> OrcaSelectedProfiles(
+            printer = profile,
+            availableCloudProfiles = availableProfiles,
+        )
+        OrcaProfileType.FILAMENT -> OrcaSelectedProfiles(
+            filament = profile,
+            availableCloudProfiles = availableProfiles,
+        )
+        OrcaProfileType.PROCESS -> OrcaSelectedProfiles(
+            process = profile,
+            availableCloudProfiles = availableProfiles,
+        )
+        OrcaProfileType.OTHER -> error("Unsupported Orca profile type: ${profile.type}")
+    }
+    val hydrated = catalog.augment(selected)
+    return OrcaProfileSettingsResolver.resolve(
+        profile = profile,
+        availableProfiles = hydrated.availableCloudProfiles,
+        supportedKeys = UiResolvedProfileKeys,
+    )
+}
+
+private fun firstProfileSetting(settings: Map<String, String>, vararg keys: String): String? =
+    keys.firstNotNullOfOrNull { key -> settings[key] }
+
+private fun printerDimensions(settings: Map<String, String>): Pair<Double, Double>? {
+    val serialized = settings["printable_area"]
+        ?: settings["bed_shape"]
+        ?: return null
+    val points = serialized.split(',', ';').mapNotNull { point ->
+        val coordinates = point.trim().split('x', 'X')
+        if (coordinates.size != 2) return@mapNotNull null
+        val x = coordinates[0].trim().toDoubleOrNull() ?: return@mapNotNull null
+        val y = coordinates[1].trim().toDoubleOrNull() ?: return@mapNotNull null
+        x to y
+    }
+    if (points.size < 3) return null
+    val width = points.maxOf { it.first } - points.minOf { it.first }
+    val depth = points.maxOf { it.second } - points.minOf { it.second }
+    return if (width > 0.0 && depth > 0.0) width to depth else null
+}
+
+private fun copyModelToCache(
+    context: Context,
+    uri: Uri,
+    objectId: PlateObjectId,
+): PlateModelSource {
+    val metadata = context.contentResolver.query(
         uri,
-        arrayOf(OpenableColumns.DISPLAY_NAME),
+        arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
         null,
         null,
         null,
     )?.use { cursor ->
-        if (cursor.moveToFirst()) cursor.getString(0) else null
-    } ?: "model.stl"
-
-    require(displayName.lowercase(Locale.US).endsWith(".stl")) {
-        "Текущая версия поддерживает только файлы STL"
+        if (!cursor.moveToFirst()) return@use null
+        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+        val name = if (nameIndex >= 0) cursor.getString(nameIndex) else null
+        val size = if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) cursor.getLong(sizeIndex) else null
+        name to size
     }
+    // Some document providers omit DISPLAY_NAME or report no extension. The importer validates
+    // the actual bytes and only uses a present extension as a strict consistency check.
+    val displayName = metadata?.first.orEmpty()
+    val originalSizeBytes = metadata?.second?.takeIf { it >= 0L }
 
-    val destination = File(context.cacheDir, "feresa-slicer-input.stl")
-    context.contentResolver.openInputStream(uri)?.use { input ->
-        destination.outputStream().use { output -> input.copyTo(output) }
+    val destination = File(context.cacheDir, "feresa-model-${objectId.value}.stl")
+    val imported = context.contentResolver.openInputStream(uri)?.use { input ->
+        ModelFileImporter.convertToBinaryStl(
+            input = input,
+            originalFileName = displayName,
+            destination = destination,
+            knownSizeBytes = originalSizeBytes,
+        )
     } ?: error("Не удалось прочитать выбранный документ")
-    return destination to displayName
+    return PlateModelSource(
+        file = imported.binaryStlFile,
+        displayName = imported.displayName,
+        localBounds = PlateBounds(
+            minimumX = imported.bounds.minimumX,
+            minimumY = imported.bounds.minimumY,
+            minimumZ = imported.bounds.minimumZ,
+            maximumX = imported.bounds.maximumX,
+            maximumY = imported.bounds.maximumY,
+            maximumZ = imported.bounds.maximumZ,
+        ),
+        sourceFormat = imported.sourceFormat.name.replace("THREE_MF", "3MF"),
+        triangleCount = imported.triangleCount,
+        originalSizeBytes = imported.originalSizeBytes,
+    )
 }
+
+private fun PlateObjectTransform.toViewerTransform(): ModelTransform = ModelTransform(
+    positionX = positionXmm,
+    positionY = positionYmm,
+    positionZ = positionZmm,
+    rotationDegrees = rotationZDegrees,
+    rotationXDegrees = rotationXDegrees,
+    rotationYDegrees = rotationYDegrees,
+    scale = scale,
+    scaleX = effectiveScaleX,
+    scaleY = effectiveScaleY,
+    scaleZ = effectiveScaleZ,
+)
+
+private fun PlateObject.toStlPlatePlacement(): StlPlatePlacement = StlPlatePlacement(
+    file = source.file,
+    positionXmm = transform.positionXmm,
+    positionYmm = transform.positionYmm,
+    positionZmm = transform.positionZmm,
+    rotationDegrees = transform.rotationZDegrees,
+    rotationXDegrees = transform.rotationXDegrees,
+    rotationYDegrees = transform.rotationYDegrees,
+    scale = transform.scale,
+    scaleX = transform.scaleX,
+    scaleY = transform.scaleY,
+    scaleZ = transform.scaleZ,
+)
+
+/** File-backed exact correction; callers must run this away from the Compose main thread. */
+private fun PlateWorkspace.moveObjectToExactBed(objectId: PlateObjectId): PlateWorkspace {
+    val model = objectOrNull(objectId)
+        ?: throw IllegalArgumentException("Неизвестная модель '$objectId'")
+    val exactBounds = StlPlateComposer.exactPlacedBounds(model.toStlPlatePlacement())
+    return updateTransform(objectId) { transform ->
+        transform.copy(positionZmm = transform.positionZmm - exactBounds.minimumZ)
+    }
+}
+
+private fun findInitialPlateTransform(
+    workspace: PlateWorkspace,
+    source: PlateModelSource,
+    buildVolume: RectangularBuildVolume,
+): PlateObjectTransform {
+    val spacingMm = 6.0
+    val stepX = (source.localBounds.width + spacingMm).coerceAtLeast(20.0)
+    val stepY = (source.localBounds.depth + spacingMm).coerceAtLeast(20.0)
+    val candidates = (-4..4).flatMap { row ->
+        (-4..4).map { column -> column to row }
+    }.sortedWith(
+        compareBy<Pair<Int, Int>> { kotlin.math.abs(it.first) + kotlin.math.abs(it.second) }
+            .thenBy { kotlin.math.abs(it.second) }
+            .thenBy { kotlin.math.abs(it.first) },
+    )
+    val volumeBounds = PlateBounds(
+        minimumX = 0.0,
+        minimumY = 0.0,
+        minimumZ = 0.0,
+        maximumX = buildVolume.widthMm,
+        maximumY = buildVolume.depthMm,
+        maximumZ = buildVolume.heightMm,
+    )
+    return candidates.asSequence()
+        .map { (column, row) ->
+            PlateObjectTransform(
+                positionXmm = buildVolume.centerX + column * stepX,
+                positionYmm = buildVolume.centerY + row * stepY,
+            )
+        }
+        .firstOrNull { transform ->
+            val bounds = source.localBounds.transformedBy(transform)
+            bounds.minimumX >= volumeBounds.minimumX &&
+                bounds.maximumX <= volumeBounds.maximumX &&
+                bounds.minimumY >= volumeBounds.minimumY &&
+                bounds.maximumY <= volumeBounds.maximumY &&
+                bounds.maximumZ <= volumeBounds.maximumZ &&
+                workspace.objects.none { existing -> bounds.overlaps(existing.plateBounds, spacingMm) }
+        }
+        ?: PlateObjectTransform(positionXmm = buildVolume.centerX, positionYmm = buildVolume.centerY)
+}
+
+private fun PlateBounds.overlaps(other: PlateBounds, spacingMm: Double): Boolean =
+    maximumX + spacingMm > other.minimumX &&
+        minimumX - spacingMm < other.maximumX &&
+        maximumY + spacingMm > other.minimumY &&
+        minimumY - spacingMm < other.maximumY

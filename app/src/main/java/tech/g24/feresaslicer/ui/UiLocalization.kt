@@ -4,9 +4,9 @@ package tech.g24.feresaslicer.ui
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.Text as MaterialText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -23,23 +23,22 @@ enum class UiLanguage {
     ENGLISH,
 }
 
+/** Explicit in-app language. Feresa defaults to Russian until the user changes it. */
+val LocalUiLanguage = staticCompositionLocalOf { UiLanguage.RUSSIAN }
+
 fun resolveUiLanguage(locale: Locale): UiLanguage =
     if (locale.language.equals("ru", ignoreCase = true)) UiLanguage.RUSSIAN else UiLanguage.ENGLISH
 
 @Composable
-fun currentUiLanguage(): UiLanguage {
-    val locales = LocalConfiguration.current.locales
-    val locale = if (locales.isEmpty) Locale.getDefault() else locales[0]
-    return resolveUiLanguage(locale)
-}
+fun currentUiLanguage(): UiLanguage = LocalUiLanguage.current
 
 /**
  * Localized Material 3 text used throughout the app.
  *
  * The project originally shipped with Russian literals embedded in Compose code. Keeping this
  * compatibility layer lets every existing screen participate in locale changes while translations
- * are centralized and testable. Russian is retained for Russian devices; English is the fallback
- * for every other system locale.
+ * are centralized and testable. The language is selected explicitly in the app settings and
+ * defaults to Russian on the first launch.
  */
 @Composable
 fun Text(
@@ -114,12 +113,19 @@ private val ENGLISH_TEXT = mapOf(
     "Положение" to "Position",
     "Нарезка" to "Slice",
     "Файл модели" to "Model file",
+    "Модели на столе" to "Models on the plate",
     "Файл не выбран" to "No file selected",
     "Поддерживаются модели STL в binary- и ASCII-формате." to "Binary and ASCII STL models are supported.",
+    "Поддерживаются STL, OBJ и 3MF. Можно выбрать несколько файлов сразу." to
+        "STL, OBJ, and 3MF are supported. You can select multiple files at once.",
     "Формат: STL" to "Format: STL",
     "Состояние: нарезка готова" to "Status: slicing complete",
     "Состояние: модель загружена" to "Status: model loaded",
     "Загрузить STL" to "Load STL",
+    "Добавить STL" to "Add STL",
+    "Загрузить модель" to "Load model",
+    "Добавить модель" to "Add model",
+    "Удалить выбранную модель" to "Remove selected model",
     "Заменить STL" to "Replace STL",
     "Удалить файл" to "Remove file",
     "Расположение модели" to "Model placement",
@@ -128,10 +134,38 @@ private val ENGLISH_TEXT = mapOf(
     "Модель выходит за пределы печатного стола" to "The model extends beyond the print bed",
     "Позиция X" to "X position",
     "Позиция Y" to "Y position",
+    "Позиция Z" to "Z position",
+    "Положение XYZ" to "XYZ position",
     "Поворот" to "Rotation",
+    "Поворот XYZ" to "XYZ rotation",
+    "Поворот X" to "X rotation",
+    "Поворот Y" to "Y rotation",
+    "Поворот Z" to "Z rotation",
     "Масштаб" to "Scale",
+    "Масштаб X" to "X scale",
+    "Масштаб Y" to "Y scale",
+    "Масштаб Z" to "Z scale",
+    "Сохранять пропорции" to "Keep proportions",
     "По центру" to "Center",
+    "На стол" to "Place on bed",
     "Повернуть 90°" to "Rotate 90°",
+    "Повернуть Z 90°" to "Rotate Z 90°",
+    "Положить гранью" to "Lay flat",
+    "Дублировать" to "Duplicate",
+    "Переименовать" to "Rename",
+    "Переименовать модель" to "Rename model",
+    "Название" to "Name",
+    "Автоматически расставить" to "Auto arrange",
+    "Выберите модель на столе" to "Select a model on the plate",
+    "Объект выходит за пределы области печати" to "The object is outside the build volume",
+    "Модель размещена по центру" to "Model centered",
+    "Модель опущена на стол" to "Model placed on bed",
+    "Модель повёрнута на 90°" to "Model rotated by 90°",
+    "Модель положена крупнейшей гранью" to "Model placed on its largest face",
+    "Создана копия модели" to "Model duplicated",
+    "Копия создана; не всё поместилось на стол" to "Duplicate created; not everything fit on the bed",
+    "Модели автоматически расставлены" to "Models auto-arranged",
+    "Модель переименована" to "Model renamed",
     "Модели" to "Models",
     "Удалить" to "Remove",
     "Из фото" to "From photo",
@@ -148,16 +182,19 @@ private val ENGLISH_TEXT = mapOf(
     "Нарезка…" to "Slicing…",
     "Выберите STL во вкладке «Файл», затем вернитесь сюда для нарезки." to "Select an STL on the File tab, then return here to slice it.",
     "Модель готова. После нарезки здесь появится послойная траектория G-code." to "The model is ready. A layer-by-layer G-code toolpath will appear here after slicing.",
+    "Модели готовы. После нарезки здесь появится послойная траектория G-code." to "The models are ready. A layer-by-layer G-code toolpath will appear here after slicing.",
 
     // App settings, accounts, and dialogs.
     "Настройки приложения" to "App settings",
     "Язык интерфейса" to "Interface language",
-    "Русский" to "English",
+    "Русский" to "Russian",
+    "Английский" to "English",
     "Тема" to "Theme",
     "Локальный слайсер" to "Local slicer",
     "Включён и всегда доступен без интернета" to "Enabled and always available offline",
     "Локальный слайсер бесплатный" to "Local slicing is free",
-    "Синхронизация профилей будет доступна по подписке." to "Profile synchronization will be available with a subscription.",
+    "Синхронизация профилей OrcaCloud доступна после входа." to "OrcaCloud profile synchronization is available after sign-in.",
+    "Свернуть список" to "Collapse list",
     "Синхронизация профилей" to "Profile synchronization",
     "Загружено из OrcaCloud" to "Loaded from OrcaCloud",
     "Подключение загружено из OrcaCloud" to "Connection loaded from OrcaCloud",
@@ -224,12 +261,13 @@ private val ENGLISH_TEXT = mapOf(
     "Открыть раздел «Принтер»" to "Open Printer section",
     "Отмена" to "Cancel",
     "Отправить на печать?" to "Send to printer?",
-    "G-code будет загружен, после чего печать начнётся сразу. Текущий слайсер экспериментальный — убедитесь, что принтер готов." to
-        "The G-code will be uploaded and printing will start immediately. The current slicer is experimental—make sure the printer is ready.",
+    "G-code будет загружен, после чего печать начнётся сразу. Проверьте выбранные профили и убедитесь, что принтер готов." to
+        "The G-code will be uploaded and printing will start immediately. Check the selected profiles and make sure the printer is ready.",
     "G-code готов, но в активном профиле нет поддерживаемого адреса сетевого принтера. Выберите профиль OrcaCloud с Moonraker или OctoPrint." to
         "The G-code is ready, but the active profile has no supported network printer address. Select an OrcaCloud profile with Moonraker or OctoPrint.",
     "Отправка…" to "Sending…",
     "G-code готов" to "G-code ready",
+    "Нарезано движком OrcaSlicer" to "Sliced with the OrcaSlicer engine",
     "Экспериментальный режим печатает только периметры. Проверьте G-code перед печатью." to "Experimental mode prints perimeters only. Check the G-code before printing.",
 
     // Toolpath preview.
@@ -242,7 +280,7 @@ private val ENGLISH_TEXT = mapOf(
     "Окраска траектории" to "Toolpath coloring",
     "Нижний видимый слой" to "Lowest visible layer",
     "Верхний видимый слой" to "Highest visible layer",
-    "Внешние периметры" to "Outer perimeters",
+    "Экструзия" to "Extrusion",
     "Перемещения" to "Travel moves",
     "Расчётное время" to "Estimated time",
     "Пруток" to "Filament",
@@ -251,8 +289,8 @@ private val ENGLISH_TEXT = mapOf(
     "Скрыть команды G-code" to "Hide G-code commands",
     "Показать команды G-code" to "Show G-code commands",
     "Нет видимых команд" to "No visible commands",
-    "Сейчас мобильное ядро строит внешние периметры. Заполнение и поддержки появятся после подключения полного ядра OrcaSlicer." to
-        "The mobile core currently generates outer perimeters. Infill and supports will be available after the full OrcaSlicer core is integrated.",
+    "Стены, оболочки, заполнение и поддержки построены движком OrcaSlicer согласно текущему профилю." to
+        "Walls, shells, infill and supports were generated by the OrcaSlicer engine using the current profile.",
 
     // Print-settings editor.
     "Основные" to "Basic",
@@ -399,6 +437,10 @@ private val ENGLISH_TEXT = mapOf(
     "Неподдерживаемый раздел профиля" to "Unsupported profile section",
     "Не удалось подключиться к принтеру" to "Could not connect to the printer",
     "Текущая версия поддерживает только файлы STL" to "The current version supports STL files only",
+    "Поддерживаются только модели STL, OBJ и 3MF" to "Only STL, OBJ, and 3MF models are supported",
+    "Не удалось положить модель гранью" to "Could not lay the model flat",
+    "Не удалось найти подходящую грань" to "Could not find a suitable face",
+    "Не удалось переименовать модель" to "Could not rename the model",
     "Не удалось прочитать выбранный документ" to "Could not read the selected document",
     "Сервер ответил, но это не похоже на Moonraker" to "The server responded, but it does not appear to be Moonraker",
     "Отправка в PrusaLink пока не поддерживается" to "Sending to PrusaLink is not supported yet",
@@ -437,6 +479,12 @@ private val ENGLISH_REPLACEMENTS: List<Pair<String, String>> = buildList {
             "локальный кэш" to "local cache",
             "загружены из облака" to "loaded from the cloud",
             "Профилей:" to "Profiles:",
+            "Объектов:" to "Objects:",
+            "Треугольников:" to "Triangles:",
+            "Добавлено моделей:" to "Models added:",
+            "Пересечение габаритов с другими моделями:" to "Bounding-box overlaps with other models:",
+            "Не поместилось моделей:" to "Models that did not fit:",
+            "Показать все" to "Show all",
             "Ход траектории" to "Toolpath move",
             "Слои" to "Layers",
             " из " to " of ",

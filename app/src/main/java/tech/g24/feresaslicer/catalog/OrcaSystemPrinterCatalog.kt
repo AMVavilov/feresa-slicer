@@ -64,3 +64,19 @@ data class OrcaSystemPrinterCatalog(
         }.getOrDefault(OrcaSystemPrinterCatalog())
     }
 }
+
+/**
+ * Returns a catalog containing only printers backed by a usable system preset.
+ *
+ * Kept pure so the expensive preset lookup can run entirely off the UI thread while preserving
+ * catalog provenance and recalculating the visible vendor count.
+ */
+internal fun OrcaSystemPrinterCatalog.filterPrinters(
+    predicate: (OrcaSystemPrinterProfile) -> Boolean,
+): OrcaSystemPrinterCatalog {
+    val compatiblePrinters = printers.filter(predicate)
+    return copy(
+        printers = compatiblePrinters,
+        vendorCount = compatiblePrinters.map { it.vendor }.distinct().size,
+    )
+}

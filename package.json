@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "build:viewer": "esbuild web-src/viewer.js --bundle --minify --format=iife --target=chrome100 --outfile=app/src/main/assets/viewer/viewer.bundle.js",
-    "test:viewer": "node --test web-src/toolpath-parser.test.mjs"
+    "test:viewer": "node --test web-src/*.test.mjs"
   },
   "dependencies": {
     "three": "0.185.1"

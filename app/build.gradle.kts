@@ -13,8 +13,9 @@ android {
         applicationId = "tech.g24.feresaslicer"
         minSdk = 28
         targetSdk = 35
-        versionCode = 23
-        versionName = "0.10.11"
+        versionCode = 25
+        versionName = "0.12.0-alpha.1"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Public OrcaCloud client configuration from OrcaSlicer's AGPL source.
         // This is a publishable identifier, not a service secret.
@@ -28,6 +29,7 @@ android {
 
         externalNativeBuild {
             cmake {
+                arguments += "-DANDROID_STL=c++_shared"
                 cppFlags += listOf("-std=c++17", "-Wall", "-Wextra")
             }
         }
@@ -67,6 +69,12 @@ android {
     packaging {
         jniLibs.useLegacyPackaging = false
     }
+
+    sourceSets {
+        getByName("main").assets.srcDir(
+            layout.buildDirectory.dir("generated/orcaSystemPresets/assets"),
+        )
+    }
 }
 
 dependencies {
@@ -82,4 +90,41 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+    // Android's org.json implementation is provided by the platform in production. Use the
+    // matching JVM implementation so the process-settings wire contract can be tested locally.
+    testImplementation("org.json:json:20240303")
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit-ktx:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+}
+
+val fetchOrcaMobileEngine by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Fetches the checksummed ARM64 OrcaSlicer Mobile native engine"
+    commandLine("bash", rootProject.file("scripts/fetch-orca-mobile-engine.sh").absolutePath)
+    inputs.property(
+        "orcaMobileEngineSha256",
+        "25bd3b72ff698b43991005f0df65ac57f67766ed4b240c48b8f3ec943eafbbdd",
+    )
+    outputs.file(layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/.orca-mobile-engine.sha256"))
+}
+
+val fetchOrcaSystemPresets by tasks.registering(Exec::class) {
+    group = "build setup"
+    description = "Fetches the checksummed Orca system profile bundle"
+    commandLine("bash", rootProject.file("scripts/fetch-orca-system-presets.sh").absolutePath)
+    environment(
+        "FERESA_ORCA_PRESET_TARGET_DIR",
+        layout.buildDirectory.dir("generated/orcaSystemPresets/assets/orca_profiles")
+            .get().asFile.absolutePath,
+    )
+    inputs.property(
+        "orcaSystemPresetManifestSha256",
+        "e6cd5b0f71b0d1f2b0b1202e177d2df2b4af0bb2a8a91f2872715a72ee37b98d",
+    )
+    outputs.dir(layout.buildDirectory.dir("generated/orcaSystemPresets/assets/orca_profiles"))
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(fetchOrcaMobileEngine, fetchOrcaSystemPresets)
 }

@@ -22,11 +22,13 @@ data class SlicerSettings(
     val modelPositionYmm: Double = 110.0,
     val modelRotationDegrees: Double = 0.0,
     val modelScale: Double = 1.0,
+    val ensureModelOnBed: Boolean = true,
 )
 
 data class SliceReport(
     val success: Boolean,
     val message: String,
+    val recommendedFileName: String? = null,
     val layers: Long = 0,
     val extrusionSegments: Long = 0,
     val filamentLengthMm: Double = 0.0,

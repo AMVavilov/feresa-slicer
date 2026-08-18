@@ -23,7 +23,7 @@ data class OrcaPrinterConnection(
     val password: String = "",
 ) {
     val hasAuthentication: Boolean
-        get() = apiKey.isNotBlank() || username.isNotBlank() || password.isNotBlank()
+        get() = apiKey.isNotBlank() || (username.isNotBlank() && password.isNotBlank())
 }
 
 fun OrcaCloudProfile.printerConnection(): OrcaPrinterConnection? {
