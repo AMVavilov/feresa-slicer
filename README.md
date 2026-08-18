@@ -11,7 +11,7 @@ Bambu Lab.
 
 ## Download
 
-[Download the latest tested Android APK](https://github.com/AMVavilov/feresa-slicer/releases/latest).
+[Download the latest tested Android APK](https://github.com/AMVavilov/feresa-slicer/releases).
 This is an alpha development build intended for testing on ARM64 Android devices. APK files are
 published as GitHub Release assets instead of being committed to the source repository.
 
