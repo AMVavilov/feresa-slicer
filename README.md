@@ -31,10 +31,16 @@ published as GitHub Release assets instead of being committed to the source repo
   profiles: 63 manufacturers and 908 printer/nozzle configurations. Selecting
   one applies its print volume, nozzle, G-code flavor and default process name.
 - Optional OrcaCloud sign-in with Google or GitHub through the system browser.
-- OrcaCloud printer profiles import `host_type`, `print_host`, port and
-  authentication settings. Moonraker/Klipper and OctoPrint profiles can receive
-  the generated G-code and start printing after an explicit confirmation.
-- OAuth 2.0 PKCE with loopback callback and Android Keystore-protected refresh token.
+- Moonraker/Klipper and OctoPrint connections can be entered manually or
+  imported from OrcaCloud printer profiles (`host_type`, `print_host`, port and
+  authentication settings). The Printer screen reports normalized server,
+  printer, job, progress and temperature status when the host provides it.
+- Network sending separates upload-only from upload-and-start. Starting is
+  enabled only after a fresh status probe reports that the printer can accept a
+  new job; a failed start never hides a successful upload.
+- OAuth 2.0 PKCE with loopback callback. The refresh token, downloaded
+  OrcaCloud profile cache, and saved manual printer credentials are encrypted
+  at rest with separate AES-256-GCM keys held by Android Keystore.
 - Five-part bottom navigation matching the slicer workflow: Model, Printer,
   Filament, Print, and App. After a model is selected, the Model workspace adds
   a floating View, Position, and Slice switcher above it.
@@ -74,8 +80,12 @@ STL/OBJ/3MF geometry files on one plate and has one active filament; there is no
 mobile multi-material object assignment, filament palette/AMS workflow, preservation of 3MF
 project settings, desktop GUI, or slice cancellation. Multimaterial-related process
 values can be stored in a profile, but they do not create a multi-filament
-project by themselves. Generated G-code must be reviewed before printing, and
-the technical preview is not intended for unattended printing.
+project by themselves. Network printer support is limited to Moonraker and
+OctoPrint; there is no LAN discovery, camera, queue/file manager, or remote
+pause/cancel control. Generated G-code must be reviewed before printing, and
+the technical preview is not intended for unattended printing. The network
+path has automated local-server coverage but has not been certified against a
+physical printer.
 
 ## Build
 

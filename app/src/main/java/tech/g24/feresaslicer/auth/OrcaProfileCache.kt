@@ -12,12 +12,28 @@ internal data class CachedOrcaProfiles(
     val syncedAt: Long,
 )
 
-internal class OrcaProfileCache(context: Context) {
-    private val cacheFile = File(context.filesDir, "orca_profiles_cache.json")
+internal class OrcaProfileCache(
+    context: Context,
+    cacheFileName: String = "orca_profiles_cache.enc",
+    legacyCacheFileName: String = "orca_profiles_cache.json",
+    keyAlias: String = KEY_ALIAS,
+) {
+    private val cacheFile = File(context.filesDir, cacheFileName)
+    private val legacyCacheFile = File(context.filesDir, legacyCacheFileName)
+    private val cipher = AndroidKeystoreAesGcm(keyAlias)
 
     fun read(): CachedOrcaProfiles? = runCatching {
-        if (!cacheFile.exists()) return null
-        val root = JSONObject(cacheFile.readText())
+        val json = when {
+            cacheFile.exists() -> String(cipher.decrypt(cacheFile.readText()), Charsets.UTF_8).also {
+                legacyCacheFile.delete()
+            }
+            legacyCacheFile.exists() -> legacyCacheFile.readText().also { legacy ->
+                writeEncrypted(legacy)
+                legacyCacheFile.delete()
+            }
+            else -> return null
+        }
+        val root = JSONObject(json)
         val profiles = root.optJSONArray("profiles") ?: JSONArray()
         CachedOrcaProfiles(
             userId = root.getString("user_id"),
@@ -55,10 +71,29 @@ internal class OrcaProfileCache(context: Context) {
             .put("user_id", userId)
             .put("synced_at", syncedAt)
             .put("profiles", items)
-        cacheFile.writeText(root.toString())
+        writeEncrypted(root.toString())
+        legacyCacheFile.delete()
     }
 
     fun clear() {
         if (cacheFile.exists()) cacheFile.delete()
+        if (legacyCacheFile.exists()) legacyCacheFile.delete()
+    }
+
+    private fun writeEncrypted(json: String) {
+        val temporary = File(cacheFile.parentFile, "${cacheFile.name}.tmp")
+        temporary.writeText(cipher.encrypt(json.toByteArray(Charsets.UTF_8)))
+        if (cacheFile.exists() && !cacheFile.delete()) {
+            temporary.delete()
+            error("Could not replace encrypted Orca profile cache")
+        }
+        if (!temporary.renameTo(cacheFile)) {
+            temporary.delete()
+            error("Could not save encrypted Orca profile cache")
+        }
+    }
+
+    private companion object {
+        const val KEY_ALIAS = "feresa_slicer_orca_profiles"
     }
 }

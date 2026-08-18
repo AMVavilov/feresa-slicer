@@ -13,8 +13,8 @@ android {
         applicationId = "tech.g24.feresaslicer"
         minSdk = 28
         targetSdk = 35
-        versionCode = 25
-        versionName = "0.12.0-alpha.1"
+        versionCode = 26
+        versionName = "0.13.0-alpha.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Public OrcaCloud client configuration from OrcaSlicer's AGPL source.

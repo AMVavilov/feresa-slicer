@@ -1,5 +1,47 @@
 # Verification record
 
+## 2026-08-18 Feresa Slicer 0.13.0-alpha.1 printer phase
+
+The current working tree adds the following automated coverage for the new
+Printer workflow:
+
+- `PrinterConnectionServiceTest` uses loopback HTTP servers to exercise typed
+  Moonraker and OctoPrint identity/status parsing, printer/job/progress and
+  temperature mapping, offline/startup behavior, authentication headers,
+  redirect refusal, fixed-length multipart uploads, returned-path validation,
+  URL encoding, and the separation between upload and start.
+- `ManualPrinterConnectionStoreTest` covers host normalization, port and
+  credential validation, and saved-connection serialization.
+- `SliceArtifactGenerationTest` covers rejection of an artifact produced for
+  an older model/settings generation.
+- `PrinterStorageInstrumentedTest` checks that manually saved credentials and
+  the OrcaCloud profile cache can be restored but their secrets do not appear
+  in the persisted encrypted envelopes; it also checks that the legacy
+  plaintext cache is absent after an encrypted write.
+
+Completed verification on the final release source:
+
+- `npm run test:viewer`: 28 tests, 0 failures.
+- `./gradlew -I /tmp/feresa-parity-builddir.gradle --no-watch-fs
+  :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`: 117 JVM tests,
+  0 failures/errors/skips; lint and the ARM64 debug APK build passed.
+- `./gradlew -I /tmp/feresa-parity-builddir.gradle --no-watch-fs
+  :app:connectedDebugAndroidTest`: 8 tests, 0 failures on an ARM64 Android
+  16/API 36 emulator. This includes native Orca parity/plate fixtures and the
+  isolated encrypted-storage checks; the tests do not erase the emulator's
+  real saved connection or Orca profile cache.
+- The final `0.13.0-alpha.1` APK (`versionCode 26`) installed and launched on
+  that emulator. The Model empty state, Printer empty state, and the complete
+  manual Moonraker/OctoPrint editor were visually checked at 1080 x 2400.
+- APK SHA-256:
+  `46f489d75642fe21a50294f08200e3df0cb4eb2f13e9c5fc91fd364975c26863`.
+- Android build-tools verified the APK's v2 signature and 16 KiB page
+  zip-alignment. It is a debug-signed alpha APK, not a Play Store release.
+
+No physical Moonraker or OctoPrint upload/start test was performed. Upload and
+especially automatic start therefore remain an alpha feature that requires a
+user confirmation and a fresh ready-state probe.
+
 ## 2026-08-18 pinned OrcaSlicer Mobile engine integration
 
 Engine identity and packaging audit:

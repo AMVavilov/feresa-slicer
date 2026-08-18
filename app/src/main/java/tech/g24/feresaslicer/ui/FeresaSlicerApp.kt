@@ -67,6 +67,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
@@ -86,6 +87,7 @@ import tech.g24.feresaslicer.slicer.SliceReport
 import tech.g24.feresaslicer.slicer.SlicerSettings
 import java.io.File
 import java.util.Locale
+import java.util.UUID
 import kotlin.math.roundToInt
 import tech.g24.feresaslicer.auth.OrcaAuthProvider
 import tech.g24.feresaslicer.auth.OrcaAuthState
@@ -100,6 +102,14 @@ import tech.g24.feresaslicer.catalog.OrcaSystemPrinterCatalog
 import tech.g24.feresaslicer.catalog.OrcaSystemPrinterProfile
 import tech.g24.feresaslicer.catalog.filterPrinters
 import tech.g24.feresaslicer.printer.NetworkPrinterClient
+import tech.g24.feresaslicer.printer.ManualPrinterConnectionDraft
+import tech.g24.feresaslicer.printer.ManualPrinterConnectionStore
+import tech.g24.feresaslicer.printer.PrinterConnectionService
+import tech.g24.feresaslicer.printer.PrinterConnectionTestResult
+import tech.g24.feresaslicer.printer.PrinterJobState
+import tech.g24.feresaslicer.printer.PrinterOperationalState
+import tech.g24.feresaslicer.printer.PrinterStatus
+import tech.g24.feresaslicer.printer.SavedManualPrinterConnection
 import tech.g24.feresaslicer.modelimport.ModelFileImporter
 import tech.g24.feresaslicer.plate.PlateBounds
 import tech.g24.feresaslicer.plate.PlateAxis
@@ -149,6 +159,12 @@ private enum class AppThemeMode(val label: String) {
 private const val ThemePreferences = "feresa_slicer_preferences"
 private const val ThemeModeKey = "theme_mode"
 private const val LanguageModeKey = "language_mode"
+
+internal fun <T> currentSliceArtifact(
+    value: T?,
+    producedGeneration: Long?,
+    currentGeneration: Long,
+): T? = value?.takeIf { producedGeneration == currentGeneration }
 
 private val Surface: Color
     @Composable get() = MaterialTheme.colorScheme.surface
@@ -231,6 +247,7 @@ fun FeresaSlicerApp() {
     }
     var plateWorkspace by remember { mutableStateOf(PlateWorkspace.empty()) }
     var generatedGcode by remember { mutableStateOf<File?>(null) }
+    var generatedGcodeGeneration by remember { mutableStateOf<Long?>(null) }
     var report by remember { mutableStateOf<SliceReport?>(null) }
     var isWorking by remember { mutableStateOf(false) }
     var sliceGeneration by remember { mutableStateOf(0L) }
@@ -240,7 +257,13 @@ fun FeresaSlicerApp() {
     var showSendToPrinter by remember { mutableStateOf(false) }
     var isSendingToPrinter by remember { mutableStateOf(false) }
     var isTestingPrinter by remember { mutableStateOf(false) }
+    var printerProbeRequestId by remember { mutableStateOf(0L) }
     var printerConnectionStatus by remember { mutableStateOf<String?>(null) }
+    var printerConnectionTestResult by remember { mutableStateOf<PrinterConnectionTestResult?>(null) }
+    var isTestingSendPrinter by remember { mutableStateOf(false) }
+    var sendPrinterProbeRequestId by remember { mutableStateOf(0L) }
+    var sendPrinterConnectionStatus by remember { mutableStateOf<String?>(null) }
+    var sendPrinterConnectionTestResult by remember { mutableStateOf<PrinterConnectionTestResult?>(null) }
     var printerDialogResult by remember { mutableStateOf<PrinterDialogResult?>(null) }
     var viewerSceneState by remember { mutableStateOf<ViewerSceneState?>(null) }
     var viewerMode by remember { mutableStateOf(ViewerMode.MODEL) }
@@ -290,10 +313,17 @@ fun FeresaSlicerApp() {
     fun invalidatePlateSlice() {
         sliceGeneration += 1L
         generatedGcode = null
+        generatedGcodeGeneration = null
         report = null
         viewerSceneState = null
         viewerMode = ViewerMode.MODEL
     }
+
+    val currentGeneratedGcode = currentSliceArtifact(
+        value = generatedGcode,
+        producedGeneration = generatedGcodeGeneration,
+        currentGeneration = sliceGeneration,
+    )
 
     fun updateSelectedTransform(update: (PlateObjectTransform) -> PlateObjectTransform) {
         val selectedId = plateWorkspace.selectedObjectId ?: return
@@ -348,22 +378,47 @@ fun FeresaSlicerApp() {
     var printerProfileName by remember { mutableStateOf("Generic 220") }
     var filamentProfileName by remember { mutableStateOf("Generic PLA") }
     var processProfileName by remember { mutableStateOf("Standard quality") }
-    var activeConnectionProfileId by remember { mutableStateOf<String?>(null) }
+    var activeCloudPrinterProfileId by remember { mutableStateOf<String?>(null) }
     var activeSystemPrinterProfile by remember { mutableStateOf<OrcaCloudProfile?>(null) }
     var activeSystemProcessProfile by remember { mutableStateOf<OrcaCloudProfile?>(null) }
+    val manualPrinterConnectionStore = remember(applicationContext) {
+        ManualPrinterConnectionStore(applicationContext)
+    }
+    var savedManualPrinterConnection by remember(applicationContext) {
+        mutableStateOf(manualPrinterConnectionStore.read())
+    }
 
-    val activePrinterProfile = cloudProfileState.profiles.firstOrNull {
-        it.type == OrcaProfileType.PRINTER && it.id == activeConnectionProfileId
-    } ?: cloudProfileState.profiles.firstOrNull {
-        it.type == OrcaProfileType.PRINTER && it.name == printerProfileName
+    val activePrinterProfile = activeCloudPrinterProfileId?.let { selectedId ->
+        cloudProfileState.profiles.firstOrNull {
+            it.type == OrcaProfileType.PRINTER && it.id == selectedId
+        }
     } ?: activeSystemPrinterProfile?.takeIf { it.name == printerProfileName }
+        ?: cloudProfileState.profiles.firstOrNull {
+            it.type == OrcaProfileType.PRINTER && it.name == printerProfileName
+        }
     val activeFilamentProfile = cloudProfileState.profiles.firstOrNull {
         it.type == OrcaProfileType.FILAMENT && it.name == filamentProfileName
     }
     val activeProcessProfile = cloudProfileState.profiles.firstOrNull {
         it.type == OrcaProfileType.PROCESS && it.name == processProfileName
     } ?: activeSystemProcessProfile?.takeIf { it.name == processProfileName }
-    val activePrinterConnection = activePrinterProfile?.printerConnection()
+    val profilePrinterConnection = activePrinterProfile?.printerConnection()
+    val activePrinterConnection = savedManualPrinterConnection
+        ?.takeIf(SavedManualPrinterConnection::isActive)
+        ?.connection
+        ?: profilePrinterConnection
+    val activePrinterConnectionSource = when {
+        savedManualPrinterConnection?.isActive == true -> "Ручное подключение"
+        profilePrinterConnection != null -> "Профиль OrcaCloud"
+        else -> null
+    }
+
+    LaunchedEffect(activePrinterConnection) {
+        printerProbeRequestId += 1L
+        isTestingPrinter = false
+        printerConnectionTestResult = null
+        printerConnectionStatus = null
+    }
 
     LaunchedEffect(applicationContext) {
         val loadedCatalogs = runCatching {
@@ -392,12 +447,15 @@ fun FeresaSlicerApp() {
     LaunchedEffect(cloudProfileState.profiles, systemPresetCatalog) {
         val connectedProfile = cloudProfileState.profiles
             .firstOrNull { it.printerConnection()?.hostType?.canSendGcode == true }
-        if (activeConnectionProfileId == null || cloudProfileState.profiles.none { it.id == activeConnectionProfileId }) {
-            activeConnectionProfileId = connectedProfile?.id
+        if (activeCloudPrinterProfileId != null &&
+            cloudProfileState.profiles.none { it.id == activeCloudPrinterProfileId }
+        ) {
+            activeCloudPrinterProfileId = null
         }
         val presetCatalog = systemPresetCatalog ?: return@LaunchedEffect
-        if (printerProfileName == "Generic 220") {
+        if (printerProfileName == "Generic 220" && activeCloudPrinterProfileId == null) {
             connectedProfile?.let { profile ->
+                activeCloudPrinterProfileId = profile.id
                 runCatching {
                     resolveProfileSettingsForUi(
                         catalog = presetCatalog,
@@ -429,6 +487,12 @@ fun FeresaSlicerApp() {
                 }
             }
         }
+    }
+
+    // A sync, sign-out, or parent-profile update can change the effective native config even when
+    // the selected profile name stays the same. Never keep a slice produced from the old snapshot.
+    LaunchedEffect(cloudProfileState.profiles) {
+        invalidatePlateSlice()
     }
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -466,7 +530,7 @@ fun FeresaSlicerApp() {
     val gcodeSaver = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/x.gcode")
     ) { uri ->
-        val source = generatedGcode
+        val source = currentGeneratedGcode
         if (uri != null && source != null) {
             scope.launch {
                 runCatching {
@@ -533,15 +597,18 @@ fun FeresaSlicerApp() {
         }
         sliceGeneration += 1L
         val generationSnapshot = sliceGeneration
+        val runToken = UUID.randomUUID().toString()
 
         scope.launch {
             isWorking = true
             errorMessage = null
             report = null
             generatedGcode = null
+            generatedGcodeGeneration = null
             viewerMode = ViewerMode.MODEL
-            val outputFile = File(context.cacheDir, "feresa-slicer-output.gcode")
-            val configFile = File(context.cacheDir, "feresa-orca-current.ini")
+            val outputFile = File(context.cacheDir, "feresa-slicer-output-$runToken.gcode")
+            val configFile = File(context.cacheDir, "feresa-orca-$runToken.ini")
+            val plateFile = File(context.cacheDir, "feresa-slicer-plate-$runToken.stl")
             runCatching {
                 withContext(Dispatchers.Default) {
                     val completeProcessPayload = printSettings.toOrcaProcessSettingsPayload()
@@ -589,7 +656,7 @@ fun FeresaSlicerApp() {
                     // by the viewer instead of silently reducing it to legacy Z rotation + scale.
                     val composed = StlPlateComposer.compose(
                         placements = plateSnapshot.objects.map { it.toStlPlatePlacement() },
-                        output = File(context.cacheDir, "feresa-slicer-plate.stl"),
+                        output = plateFile,
                     )
                     val sliceSource = composed.file
                     val sliceSettings = settings.copy(
@@ -610,10 +677,14 @@ fun FeresaSlicerApp() {
                     )
                 }
             }.onSuccess { result ->
-                if (sliceGeneration != generationSnapshot) return@onSuccess
+                if (sliceGeneration != generationSnapshot) {
+                    outputFile.delete()
+                    return@onSuccess
+                }
                 report = result
                 if (result.success) {
                     generatedGcode = outputFile
+                    generatedGcodeGeneration = generationSnapshot
                     viewerMode = ViewerMode.TOOLPATH
                     modelWorkspaceSection = ModelWorkspaceSection.SLICE
                     toolpathMinimumLayer = 0
@@ -622,14 +693,20 @@ fun FeresaSlicerApp() {
                     showExtrusionMoves = true
                     showTravelMoves = false
                 } else {
+                    outputFile.delete()
                     generatedGcode = null
+                    generatedGcodeGeneration = null
                     errorMessage = result.message
                 }
             }.onFailure { error ->
+                outputFile.delete()
                 if (sliceGeneration != generationSnapshot) return@onFailure
                 generatedGcode = null
+                generatedGcodeGeneration = null
                 errorMessage = error.message ?: "Ошибка слайсера"
             }
+            configFile.delete()
+            plateFile.delete()
             isWorking = false
         }
     }
@@ -707,7 +784,7 @@ fun FeresaSlicerApp() {
                 if (modelWorkspaceSection == ModelWorkspaceSection.SLICE) {
                     OrcaSliceWorkspace(
                         modelFile = selectedFile,
-                        gcodeFile = generatedGcode,
+                        gcodeFile = currentGeneratedGcode,
                         report = report,
                         transform = modelTransform,
                         bedWidth = bedWidth,
@@ -737,7 +814,10 @@ fun FeresaSlicerApp() {
                         onProgressChange = { toolpathProgress = it },
                         onResetCamera = { cameraResetRequest += 1 },
                         onSaveGcode = saveCurrentGcode,
-                        onSendToPrinter = { showSendToPrinter = true },
+                        onSendToPrinter = {
+                            printerConnectionTestResult = null
+                            showSendToPrinter = true
+                        },
                         isSendingToPrinter = isSendingToPrinter,
                     )
                     errorMessage?.let { message ->
@@ -817,7 +897,7 @@ fun FeresaSlicerApp() {
                                 Spacer(Modifier.height(6.dp))
                             }
                             Text(
-                                if (generatedGcode != null) "Состояние: нарезка готова" else "Состояние: модель загружена",
+                                if (currentGeneratedGcode != null) "Состояние: нарезка готова" else "Состояние: модель загружена",
                                 color = Accent,
                                 fontSize = 13.sp,
                             )
@@ -905,7 +985,7 @@ fun FeresaSlicerApp() {
                             ModelContextRail(
                                 section = modelWorkspaceSection,
                                 hasModel = hasPlateModels,
-                                hasGcode = generatedGcode != null,
+                                hasGcode = currentGeneratedGcode != null,
                                 isWorking = isWorking,
                                 onImportModel = { filePicker.launch(arrayOf("*/*")) },
                                 onRemoveModel = removeCurrentModel,
@@ -937,7 +1017,10 @@ fun FeresaSlicerApp() {
                                     }
                                 },
                                 onSlice = sliceCurrentModel,
-                                onSendToPrinter = { showSendToPrinter = true },
+                                onSendToPrinter = {
+                                    printerConnectionTestResult = null
+                                    showSendToPrinter = true
+                                },
                                 onSaveGcode = saveCurrentGcode,
                                 modifier = Modifier
                                     .width(76.dp)
@@ -1267,9 +1350,7 @@ fun FeresaSlicerApp() {
                                 previous[key] != next[key]
                             }
                             printSettings = it
-                            generatedGcode = null
-                            report = null
-                            viewerMode = ViewerMode.MODEL
+                            invalidatePlateSlice()
                         },
                         nozzleDiameter = nozzleDiameter,
                         onNozzleDiameter = {
@@ -1302,23 +1383,78 @@ fun FeresaSlicerApp() {
                         printerProfileName = printerProfileName,
                         filamentProfileName = filamentProfileName,
                         processProfileName = processProfileName,
-                        activeConnectionProfileId = activeConnectionProfileId,
+                        activeCloudPrinterProfileId = activeCloudPrinterProfileId,
                         activePrinterConnection = activePrinterConnection,
+                        activePrinterConnectionSource = activePrinterConnectionSource,
+                        savedManualPrinterConnection = savedManualPrinterConnection,
                         printerConnectionStatus = printerConnectionStatus,
+                        printerConnectionTestResult = printerConnectionTestResult,
                         isTestingPrinter = isTestingPrinter,
                         onTestPrinter = {
                             val connection = activePrinterConnection ?: return@ProfilesScreen
+                            val requestId = printerProbeRequestId + 1L
+                            printerProbeRequestId = requestId
                             scope.launch {
                                 isTestingPrinter = true
                                 printerConnectionStatus = null
                                 runCatching {
-                                    withContext(Dispatchers.IO) { NetworkPrinterClient.test(connection) }
-                                }.onSuccess { printerConnectionStatus = it }
-                                    .onFailure {
-                                        printerConnectionStatus = it.message ?: "Не удалось подключиться к принтеру"
+                                    withContext(Dispatchers.IO) {
+                                        PrinterConnectionService.test(connection)
                                     }
-                                isTestingPrinter = false
+                                }.onSuccess { result ->
+                                    if (printerProbeRequestId == requestId) {
+                                        printerConnectionTestResult = result
+                                        printerConnectionStatus = printerConnectionResultMessage(result)
+                                    }
+                                }.onFailure { error ->
+                                    if (printerProbeRequestId == requestId) {
+                                        printerConnectionTestResult = null
+                                        printerConnectionStatus = error.message ?: "Не удалось подключиться к принтеру"
+                                    }
+                                }
+                                if (printerProbeRequestId == requestId) {
+                                    isTestingPrinter = false
+                                }
                             }
+                        },
+                        onSaveManualPrinter = { draft ->
+                            runCatching {
+                                draft.validatedConnection().also { connection ->
+                                    manualPrinterConnectionStore.write(connection, isActive = true)
+                                }
+                            }
+                                .onSuccess { connection ->
+                                    savedManualPrinterConnection = SavedManualPrinterConnection(
+                                        connection = connection,
+                                        isActive = true,
+                                    )
+                                    printerConnectionStatus = "Ручное подключение сохранено"
+                                }
+                                .onFailure { error ->
+                                    printerConnectionStatus = error.message ?: "Не удалось сохранить подключение"
+                                }
+                        },
+                        onActivateManualPrinter = {
+                            savedManualPrinterConnection?.let { saved ->
+                                runCatching {
+                                    manualPrinterConnectionStore.write(saved.connection, isActive = true)
+                                }.onSuccess {
+                                    savedManualPrinterConnection = saved.copy(isActive = true)
+                                    printerConnectionStatus = "Ручное подключение выбрано"
+                                }.onFailure { error ->
+                                    printerConnectionStatus = error.message ?: "Не удалось сохранить подключение"
+                                }
+                            }
+                        },
+                        onDeleteManualPrinter = {
+                            runCatching { manualPrinterConnectionStore.clear() }
+                                .onSuccess {
+                                    savedManualPrinterConnection = null
+                                    printerConnectionStatus = "Ручное подключение удалено"
+                                }
+                                .onFailure { error ->
+                                    printerConnectionStatus = error.message ?: "Не удалось удалить подключение"
+                                }
                         },
                         onSyncCloud = authViewModel::syncProfiles,
                         onOpenApp = { destination = AppDestination.APP },
@@ -1335,7 +1471,13 @@ fun FeresaSlicerApp() {
                                 when (profile.type) {
                                     OrcaProfileType.PRINTER -> {
                                         printerProfileName = profile.name
-                                        activeConnectionProfileId = profile.id
+                                        activeCloudPrinterProfileId = profile.id
+                                        profile.printerConnection()?.let {
+                                            savedManualPrinterConnection?.let { saved ->
+                                                manualPrinterConnectionStore.write(saved.connection, isActive = false)
+                                                savedManualPrinterConnection = saved.copy(isActive = false)
+                                            }
+                                        }
                                         activeSystemPrinterProfile = null
                                         firstProfileSetting(resolved, "nozzle_diameter")
                                             ?.let { nozzleDiameter = it }
@@ -1436,7 +1578,7 @@ fun FeresaSlicerApp() {
                                 Triple(bundledPrinter, printerSettings, bundledProcess to processSettings)
                             }.onSuccess { (bundledPrinter, resolvedPrinter, process) ->
                                 printerProfileName = profile.name
-                                activeConnectionProfileId = null
+                                activeCloudPrinterProfileId = null
                                 activeSystemPrinterProfile = bundledPrinter
                                 firstProfileSetting(resolvedPrinter, "nozzle_diameter")
                                     ?.let { nozzleDiameter = it }
@@ -1626,45 +1768,136 @@ fun FeresaSlicerApp() {
         )
     }
 
+    LaunchedEffect(showSendToPrinter, activePrinterConnection) {
+        val connection = activePrinterConnection
+        val requestId = sendPrinterProbeRequestId + 1L
+        sendPrinterProbeRequestId = requestId
+        sendPrinterConnectionTestResult = null
+        sendPrinterConnectionStatus = null
+        if (!showSendToPrinter || connection == null) {
+            isTestingSendPrinter = false
+            return@LaunchedEffect
+        }
+        isTestingSendPrinter = true
+        runCatching {
+            withContext(Dispatchers.IO) { PrinterConnectionService.test(connection) }
+        }.onSuccess { result ->
+            if (sendPrinterProbeRequestId == requestId) {
+                sendPrinterConnectionTestResult = result
+                sendPrinterConnectionStatus = printerConnectionResultMessage(result)
+            }
+        }.onFailure { error ->
+            if (sendPrinterProbeRequestId == requestId) {
+                sendPrinterConnectionTestResult = null
+                sendPrinterConnectionStatus = error.message ?: "Не удалось подключиться к принтеру"
+            }
+        }
+        if (sendPrinterProbeRequestId == requestId) {
+            isTestingSendPrinter = false
+        }
+    }
+
     if (showSendToPrinter) {
         val connection = activePrinterConnection
+        val connectedStatus = (sendPrinterConnectionTestResult as? PrinterConnectionTestResult.Connected)?.status
+        val uploadOnly: () -> Unit = upload@{
+            val target = connection ?: return@upload
+            val gcode = currentGeneratedGcode ?: return@upload
+            val remoteName = selectedName
+                ?.substringBeforeLast('.')
+                ?.plus(".gcode")
+                ?: "feresa-slicer.gcode"
+            showSendToPrinter = false
+            scope.launch {
+                isSendingToPrinter = true
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        NetworkPrinterClient.upload(target, gcode, remoteName)
+                    }
+                }.onSuccess { receipt ->
+                    printerDialogResult = PrinterDialogResult(
+                        title = "G-code загружен",
+                        message = "${target.printerName}: файл ${receipt.remotePath} загружен. Печать не запускалась.",
+                    )
+                }.onFailure { error ->
+                    printerDialogResult = PrinterDialogResult(
+                        title = "Не удалось отправить",
+                        message = error.message ?: "Ошибка соединения с принтером",
+                    )
+                }
+                isSendingToPrinter = false
+            }
+        }
+        val uploadAndStart: () -> Unit = upload@{
+            val target = connection ?: return@upload
+            val gcode = currentGeneratedGcode ?: return@upload
+            val generationSnapshot = sliceGeneration
+            val remoteName = selectedName
+                ?.substringBeforeLast('.')
+                ?.plus(".gcode")
+                ?: "feresa-slicer.gcode"
+            showSendToPrinter = false
+            scope.launch {
+                isSendingToPrinter = true
+                val upload = runCatching {
+                    withContext(Dispatchers.IO) {
+                        NetworkPrinterClient.upload(target, gcode, remoteName)
+                    }
+                }
+                upload.onSuccess { receipt ->
+                    val artifactStillCurrent = sliceGeneration == generationSnapshot &&
+                        currentSliceArtifact(
+                            value = generatedGcode,
+                            producedGeneration = generatedGcodeGeneration,
+                            currentGeneration = sliceGeneration,
+                        ) == gcode
+                    if (!artifactStillCurrent) {
+                        printerDialogResult = PrinterDialogResult(
+                            title = "Файл загружен, печать не запущена",
+                            message = "${target.printerName}: ${receipt.remotePath} сохранён на принтере. " +
+                                "Модель или настройки изменились во время загрузки — выполните новую нарезку.",
+                        )
+                    } else {
+                        runCatching {
+                            withContext(Dispatchers.IO) {
+                                NetworkPrinterClient.start(target, receipt.remotePath)
+                            }
+                        }.onSuccess {
+                            printerDialogResult = PrinterDialogResult(
+                                title = "Печать запущена",
+                                message = "${target.printerName}: файл ${receipt.remotePath} загружен, команда печати отправлена.",
+                            )
+                        }.onFailure { error ->
+                            printerDialogResult = PrinterDialogResult(
+                                title = "Файл загружен, печать не запущена",
+                                message = "${target.printerName}: ${receipt.remotePath} сохранён на принтере. " +
+                                    (error.message ?: "Принтер отклонил команду запуска"),
+                            )
+                        }
+                    }
+                }.onFailure { error ->
+                    printerDialogResult = PrinterDialogResult(
+                        title = "Не удалось отправить",
+                        message = error.message ?: "Ошибка соединения с принтером",
+                    )
+                }
+                isSendingToPrinter = false
+            }
+        }
         AlertDialog(
             onDismissRequest = { showSendToPrinter = false },
             confirmButton = {
                 if (connection?.hostType?.canSendGcode == true) {
-                    Button(
-                        onClick = {
-                            val gcode = generatedGcode
-                            if (gcode == null) {
-                                showSendToPrinter = false
-                                return@Button
-                            }
-                            showSendToPrinter = false
-                            scope.launch {
-                                isSendingToPrinter = true
-                                val remoteName = selectedName
-                                    ?.substringBeforeLast('.')
-                                    ?.plus(".gcode")
-                                    ?: "feresa-slicer.gcode"
-                                runCatching {
-                                    withContext(Dispatchers.IO) {
-                                        NetworkPrinterClient.uploadAndStart(connection, gcode, remoteName)
-                                    }
-                                }.onSuccess { receipt ->
-                                    printerDialogResult = PrinterDialogResult(
-                                        title = "Печать запущена",
-                                        message = "${connection.printerName}: файл ${receipt.remotePath} загружен, команда печати отправлена.",
-                                    )
-                                }.onFailure { error ->
-                                    printerDialogResult = PrinterDialogResult(
-                                        title = "Не удалось отправить",
-                                        message = error.message ?: "Ошибка соединения с принтером",
-                                    )
-                                }
-                                isSendingToPrinter = false
-                            }
-                        },
-                    ) { Text("Отправить и начать") }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Button(
+                            onClick = uploadAndStart,
+                            enabled = !isTestingSendPrinter && connectedStatus?.canStart == true && currentGeneratedGcode != null,
+                        ) { Text("Загрузить и начать") }
+                        TextButton(
+                            onClick = uploadOnly,
+                            enabled = !isTestingSendPrinter && connectedStatus != null && currentGeneratedGcode != null,
+                        ) { Text("Только загрузить") }
+                    }
                 } else {
                     TextButton(
                         onClick = {
@@ -1682,15 +1915,26 @@ fun FeresaSlicerApp() {
             },
             text = {
                 if (connection?.hostType?.canSendGcode == true) {
-                    Text(
-                        "${connection.printerName}\n${connection.hostType.label} · ${connection.host}\n\n" +
-                            "G-code будет загружен, после чего печать начнётся сразу. " +
-                            "Проверьте выбранные профили и убедитесь, что принтер готов.",
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("${connection.printerName}\n${connection.hostType.label} · ${connection.host}")
+                        if (isTestingSendPrinter) {
+                            Text("Проверяем состояние принтера…", color = Muted)
+                        } else {
+                            sendPrinterConnectionTestResult?.let { PrinterConnectionStatusBlock(it) }
+                            if (sendPrinterConnectionTestResult == null) {
+                                sendPrinterConnectionStatus?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                            }
+                        }
+                        Text(
+                            "Можно только загрузить G-code либо загрузить и сразу начать печать. " +
+                                "Запуск доступен только после свежей проверки готовности принтера.",
+                            fontSize = 13.sp,
+                        )
+                    }
                 } else {
                     Text(
                         "G-code готов, но в активном профиле нет поддерживаемого адреса сетевого принтера. " +
-                            "Выберите профиль OrcaCloud с Moonraker или OctoPrint.",
+                            "Добавьте Moonraker или OctoPrint в разделе «Принтер».",
                     )
                 }
             },
@@ -1998,20 +2242,35 @@ private fun ProfilesScreen(
     printerProfileName: String,
     filamentProfileName: String,
     processProfileName: String,
-    activeConnectionProfileId: String?,
+    activeCloudPrinterProfileId: String?,
     activePrinterConnection: OrcaPrinterConnection?,
+    activePrinterConnectionSource: String?,
+    savedManualPrinterConnection: SavedManualPrinterConnection?,
     printerConnectionStatus: String?,
+    printerConnectionTestResult: PrinterConnectionTestResult?,
     isTestingPrinter: Boolean,
     onTestPrinter: () -> Unit,
+    onSaveManualPrinter: (ManualPrinterConnectionDraft) -> Unit,
+    onActivateManualPrinter: () -> Unit,
+    onDeleteManualPrinter: () -> Unit,
     onSyncCloud: () -> Unit,
     onOpenApp: () -> Unit,
     onApplyCloudProfile: (OrcaCloudProfile) -> Unit,
     onApplySystemProfile: (OrcaSystemPrinterProfile) -> Unit,
 ) {
+    var showManualPrinterEditor by remember { mutableStateOf(false) }
+    var manualPrinterDraft by remember(savedManualPrinterConnection?.connection) {
+        mutableStateOf(ManualPrinterConnectionDraft.from(savedManualPrinterConnection?.connection))
+    }
+    var manualPrinterEditorError by remember { mutableStateOf<String?>(null) }
+
     if (selected == ProfileSection.PRINTER) {
         SectionCard(title = "Подключение к принтеру") {
             if (activePrinterConnection != null) {
                 Text(activePrinterConnection.printerName, fontWeight = FontWeight.SemiBold)
+                activePrinterConnectionSource?.let { source ->
+                    Text("Источник: $source", color = Accent, fontSize = 12.sp)
+                }
                 Text("Адрес: ${activePrinterConnection.host}", color = Muted, fontSize = 13.sp)
                 Text("Протокол: ${activePrinterConnection.hostType.label}", color = Muted, fontSize = 13.sp)
                 if (activePrinterConnection.port.isNotBlank()) {
@@ -2028,17 +2287,184 @@ private fun ProfilesScreen(
                     enabled = !isTestingPrinter && activePrinterConnection.hostType.canSendGcode,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (isTestingPrinter) "Проверка…" else "Проверить подключение") }
-                printerConnectionStatus?.let {
+                printerConnectionTestResult?.let { result ->
                     Spacer(Modifier.height(8.dp))
-                    Text(it, color = Accent, fontSize = 13.sp)
+                    PrinterConnectionStatusBlock(result)
+                } ?: printerConnectionStatus?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = Muted, fontSize = 13.sp)
                 }
             } else {
                 Text("Принтер не подключён", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Выберите профиль OrcaCloud, содержащий print_host и host_type.",
+                    "Добавьте адрес Moonraker или OctoPrint вручную либо выберите профиль OrcaCloud с подключением.",
                     color = Muted,
                     fontSize = 13.sp,
                 )
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        manualPrinterDraft = ManualPrinterConnectionDraft.from(
+                            savedManualPrinterConnection?.connection ?: activePrinterConnection,
+                        )
+                        manualPrinterEditorError = null
+                        showManualPrinterEditor = !showManualPrinterEditor
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (savedManualPrinterConnection == null) "Добавить вручную" else "Изменить вручную")
+                }
+                if (savedManualPrinterConnection != null && !savedManualPrinterConnection.isActive) {
+                    OutlinedButton(
+                        onClick = onActivateManualPrinter,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Использовать") }
+                }
+            }
+
+            if (showManualPrinterEditor) {
+                Spacer(Modifier.height(14.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                Spacer(Modifier.height(14.dp))
+                Text("Ручное подключение", fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = manualPrinterDraft.printerName,
+                    onValueChange = { manualPrinterDraft = manualPrinterDraft.copy(printerName = it) },
+                    label = { Text("Название принтера") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val isMoonraker = manualPrinterDraft.hostType == tech.g24.feresaslicer.auth.PrinterHostType.MOONRAKER
+                    if (isMoonraker) {
+                        Button(
+                            onClick = { manualPrinterDraft = manualPrinterDraft.copy(hostType = tech.g24.feresaslicer.auth.PrinterHostType.MOONRAKER) },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Moonraker") }
+                    } else {
+                        OutlinedButton(
+                            onClick = { manualPrinterDraft = manualPrinterDraft.copy(hostType = tech.g24.feresaslicer.auth.PrinterHostType.MOONRAKER) },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Moonraker") }
+                    }
+                    if (!isMoonraker) {
+                        Button(
+                            onClick = { manualPrinterDraft = manualPrinterDraft.copy(hostType = tech.g24.feresaslicer.auth.PrinterHostType.OCTOPRINT) },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("OctoPrint") }
+                    } else {
+                        OutlinedButton(
+                            onClick = { manualPrinterDraft = manualPrinterDraft.copy(hostType = tech.g24.feresaslicer.auth.PrinterHostType.OCTOPRINT) },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("OctoPrint") }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = manualPrinterDraft.host,
+                    onValueChange = { manualPrinterDraft = manualPrinterDraft.copy(host = it) },
+                    label = { Text("IP-адрес или URL") },
+                    placeholder = { Text("192.168.1.42") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = manualPrinterDraft.port,
+                    onValueChange = { manualPrinterDraft = manualPrinterDraft.copy(port = it.filter(Char::isDigit)) },
+                    label = { Text("Порт, если нестандартный") },
+                    placeholder = { Text(if (manualPrinterDraft.hostType == tech.g24.feresaslicer.auth.PrinterHostType.MOONRAKER) "7125" else "5000") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = manualPrinterDraft.apiKey,
+                    onValueChange = { manualPrinterDraft = manualPrinterDraft.copy(apiKey = it) },
+                    label = { Text("API-ключ, если нужен") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = manualPrinterDraft.username,
+                        onValueChange = { manualPrinterDraft = manualPrinterDraft.copy(username = it) },
+                        label = { Text("Логин") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = manualPrinterDraft.password,
+                        onValueChange = { manualPrinterDraft = manualPrinterDraft.copy(password = it) },
+                        label = { Text("Пароль") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                if (!manualPrinterDraft.host.trim().startsWith("https://", ignoreCase = true) &&
+                    (manualPrinterDraft.apiKey.isNotBlank() || manualPrinterDraft.username.isNotBlank())
+                ) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "HTTP не шифрует ключ и пароль. Используйте его только в доверенной локальной сети.",
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.sp,
+                    )
+                }
+                manualPrinterEditorError?.let { message ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(message, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Button(
+                        onClick = {
+                            runCatching { manualPrinterDraft.validatedConnection() }
+                                .onSuccess {
+                                    onSaveManualPrinter(manualPrinterDraft)
+                                    manualPrinterEditorError = null
+                                    showManualPrinterEditor = false
+                                }
+                                .onFailure { error ->
+                                    manualPrinterEditorError = error.message ?: "Проверьте параметры подключения"
+                                }
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Сохранить") }
+                    OutlinedButton(
+                        onClick = { showManualPrinterEditor = false },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Отмена") }
+                }
+                if (savedManualPrinterConnection != null) {
+                    TextButton(
+                        onClick = {
+                            onDeleteManualPrinter()
+                            showManualPrinterEditor = false
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Удалить ручное подключение") }
+                }
             }
         }
     }
@@ -2076,7 +2502,9 @@ private fun ProfilesScreen(
             state = cloudState,
             requestedType = requestedType,
             activeName = activeName,
-            activeProfileId = activeConnectionProfileId,
+            activeProfileId = activeCloudPrinterProfileId.takeIf {
+                requestedType == OrcaProfileType.PRINTER
+            },
             isSignedIn = isOrcaSignedIn,
             onRefresh = onSyncCloud,
             onOpenApp = onOpenApp,
@@ -2141,6 +2569,110 @@ private fun ProfilesScreen(
             )
         }
     }
+}
+
+private fun printerConnectionResultMessage(result: PrinterConnectionTestResult): String = when (result) {
+    is PrinterConnectionTestResult.Failed -> result.failure.userMessage
+    is PrinterConnectionTestResult.Connected -> when (val status = result.status) {
+        is PrinterStatus.Moonraker -> "Moonraker доступен · Klipper: ${status.klippyState}"
+        is PrinterStatus.OctoPrint -> "OctoPrint ${status.serverVersion} доступен"
+    }
+}
+
+@Composable
+private fun PrinterConnectionStatusBlock(result: PrinterConnectionTestResult) {
+    when (result) {
+        is PrinterConnectionTestResult.Failed -> {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+            ) {
+                Text("Подключение не установлено", fontWeight = FontWeight.SemiBold)
+                Text(result.failure.userMessage, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 13.sp)
+                result.failure.httpStatus?.let { status ->
+                    Text("HTTP $status", color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 12.sp)
+                }
+            }
+        }
+
+        is PrinterConnectionTestResult.Connected -> {
+            val status = result.status
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Text(
+                    "Состояние: ${printerOperationalStateLabel(status.operationalState)}",
+                    fontWeight = FontWeight.SemiBold,
+                )
+                when (status) {
+                    is PrinterStatus.Moonraker -> {
+                        status.moonrakerVersion?.let { Text("Moonraker $it", fontSize = 12.sp) }
+                        status.warnings.firstOrNull()?.let { warning ->
+                            Text("Предупреждение: $warning", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                        }
+                    }
+                    is PrinterStatus.OctoPrint -> Text("OctoPrint ${status.serverVersion}", fontSize = 12.sp)
+                }
+                status.job.fileName?.let { fileName ->
+                    Text("Задание: $fileName", fontSize = 13.sp)
+                }
+                if (status.job.state != PrinterJobState.UNKNOWN && status.job.state != PrinterJobState.IDLE) {
+                    val progress = status.job.progress?.let { " · ${(it * 100).roundToInt()}%" }.orEmpty()
+                    Text("Печать: ${printerJobStateLabel(status.job.state)}$progress", fontSize = 13.sp)
+                }
+                val temperatures = listOfNotNull(
+                    status.temperatures.tool?.let { temperature ->
+                        formatPrinterTemperature("Сопло", temperature.actualCelsius, temperature.targetCelsius)
+                    },
+                    status.temperatures.bed?.let { temperature ->
+                        formatPrinterTemperature("Стол", temperature.actualCelsius, temperature.targetCelsius)
+                    },
+                )
+                if (temperatures.isNotEmpty()) {
+                    Text(temperatures.joinToString(" · "), fontSize = 13.sp)
+                }
+                Text(
+                    if (status.canStart) "Принтер готов к запуску" else "Запуск сейчас недоступен",
+                    color = if (status.canStart) Accent else Muted,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+    }
+}
+
+private fun printerOperationalStateLabel(state: PrinterOperationalState): String = when (state) {
+    PrinterOperationalState.ONLINE -> "в сети"
+    PrinterOperationalState.READY -> "готов"
+    PrinterOperationalState.PRINTING -> "печатает"
+    PrinterOperationalState.PAUSED -> "пауза"
+    PrinterOperationalState.STARTING -> "запускается"
+    PrinterOperationalState.ERROR -> "ошибка"
+    PrinterOperationalState.OFFLINE -> "не готов"
+    PrinterOperationalState.UNKNOWN -> "неизвестно"
+}
+
+private fun printerJobStateLabel(state: PrinterJobState): String = when (state) {
+    PrinterJobState.IDLE -> "ожидание"
+    PrinterJobState.PRINTING -> "идёт"
+    PrinterJobState.PAUSED -> "приостановлена"
+    PrinterJobState.COMPLETE -> "завершена"
+    PrinterJobState.CANCELLED -> "отменена"
+    PrinterJobState.ERROR -> "ошибка"
+    PrinterJobState.UNKNOWN -> "неизвестно"
+}
+
+private fun formatPrinterTemperature(label: String, actual: Double?, target: Double?): String? {
+    if (actual == null && target == null) return null
+    val actualText = actual?.let { String.format(Locale.US, "%.0f", it) } ?: "—"
+    val targetText = target?.let { String.format(Locale.US, "%.0f", it) }
+    return if (targetText != null) "$label $actualText/$targetText °C" else "$label $actualText °C"
 }
 
 @Composable

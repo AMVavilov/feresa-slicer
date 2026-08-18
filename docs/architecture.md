@@ -12,7 +12,7 @@
 │                                         ▼         │
 │ Local/system/OrcaCloud profiles ──► libslic3r.so  │
 │                                                    │
-│ Optional HTTPS: OrcaCloud pull and printer upload │
+│ Optional network: cloud pull + printer I/O       │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -25,24 +25,48 @@ backend, entitlement service, or remote slicer.
 The app mirrors OrcaSlicer's public OAuth 2.0 PKCE flow. It opens the provider
 page in the system browser, listens on `localhost` ports 41172–41174 for one
 callback, verifies the random state, and exchanges the authorization code at
-OrcaCloud's token endpoint. Access tokens stay in memory. Only the rotating
-refresh token is persisted, encrypted with an app-specific AES-GCM key held by
-Android Keystore. Application backup is disabled so the encrypted token is not
-restored without its hardware-backed key.
+OrcaCloud's token endpoint. Access tokens stay in memory. The rotating refresh
+token is persisted in an AES-256-GCM envelope whose non-exportable key is held
+by Android Keystore. Application backup is disabled so the encrypted token is
+not restored without its device key.
 
 After authentication, the app performs a read-only full pull from
 `https://api.orcaslicer.com/api/v1/sync/pull`. The response is grouped into
-machine, filament, and process profiles. Full profile JSON is cached in private
-app storage for offline viewing; common slicer values can be applied to the
-current project. This client does not call the push, force-push, or delete
-routes, so it cannot modify the user's OrcaCloud data.
+machine, filament, and process profiles. Full profile JSON is cached for
+offline viewing in a separate Android Keystore AES-GCM envelope; an older
+plaintext app-private cache is migrated and deleted on first read. Common
+slicer values can be applied to the current project. This client does not call
+the push, force-push, or delete routes, so it cannot modify the user's
+OrcaCloud data.
 
 Machine profiles may also contain OrcaSlicer's print-host fields (`host_type`,
-`print_host`, `printhost_port`, and authentication values). The Android client
-uses these values only after an explicit send confirmation. Moonraker uploads
-use `/server/files/upload` followed by `/printer/print/start`; OctoPrint uses
-`/api/files/local` with the print action enabled. API keys are never shown in
-the interface or logs.
+`print_host`, `printhost_port`, and authentication values). API keys and
+passwords are never shown in the interface or logs.
+
+## Printer connection and send contract
+
+One active Moonraker or OctoPrint connection may come from the selected
+OrcaCloud printer profile or from a manually entered host, port and
+authentication configuration. The single saved manual configuration is kept
+in its own Android Keystore AES-GCM envelope and can be activated independently
+of printer geometry/slicing presets. HTTP is supported for local devices, but
+credentials sent over plain HTTP are not transport-encrypted; HTTPS should be
+used when the printer host supports it.
+
+Connection testing is read-only. Moonraker uses `/server/info` and, when
+Klipper is ready, `/printer/objects/query` for print/job/progress and
+temperature data. OctoPrint uses `/api/version`, `/api/printer`, and
+`/api/job`. Responses are schema-checked and normalized into typed operational
+and job states; redirects are not followed and response bodies are bounded.
+
+Upload and start are separate operations. Moonraker uploads through
+`/server/files/upload` and starts the exact returned path through
+`/printer/print/start`. OctoPrint uploads through `/api/files/local` with
+`select=false` and `print=false`, then starts the returned path with a separate
+`select` command whose `print` flag is true. The send dialog performs a fresh
+status probe and enables immediate start only when the normalized host status
+reports `canStart`; upload-only remains a distinct user choice. A failed start
+after a successful upload is reported as partial success.
 
 ## Configuration contract
 
@@ -84,6 +108,14 @@ G-code is parsed by layer and extrusion feature; the layer/toolpath sliders,
 print/travel visibility, and line-type/width/layer-height/speed coloring operate
 on parsed moves rather than placeholder geometry.
 
+Each generated G-code artifact is tagged with the model/settings generation
+that produced it. Model, transform, profile, machine, filament, or process
+changes advance that generation and invalidate the previous artifact. Preview,
+save, and network-send paths only receive an artifact whose generation still
+matches the current project, and each in-flight slice writes a
+generation-specific output filename so an older result cannot overwrite the
+current file.
+
 ## Pinned native engine
 
 Feresa uses the unmodified ARM64 slicing artifacts from OrcaSlicer Mobile 0.4.6:
@@ -119,6 +151,8 @@ summaries are derived from the generated G-code.
 - One active filament; no object-to-filament assignment or AMS/palette workflow
 - 3MF project settings are not restored; there is no project editor or native slice cancellation
 - No desktop GUI, wxWidgets UI, device discovery, or proprietary Bambu plugin
+- Network printing supports Moonraker and OctoPrint only; there is no discovery,
+  camera, remote queue/file manager, or pause/resume/cancel/temperature control
 - Not all desktop OrcaSlicer settings and workflows are exposed on mobile
 - Output must be inspected before printing
 
