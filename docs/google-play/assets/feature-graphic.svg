@@ -14,12 +14,8 @@
     <path d="M0 70h1024M0 140h1024M0 210h1024M0 280h1024M0 350h1024M0 420h1024"/>
     <path d="M70 0v500M140 0v500M210 0v500M280 0v500M350 0v500M420 0v500M490 0v500M560 0v500M630 0v500M700 0v500M770 0v500M840 0v500M910 0v500M980 0v500"/>
   </g>
-  <path d="M65 395l280-150 255 132-280 150z" fill="url(#plate)" stroke="#77D8C4" stroke-width="4"/>
-  <g transform="translate(165 100)">
-    <path d="M0 85L130 16l130 69-130 69z" fill="#FFFFFF"/>
-    <path d="M0 136l130 69 130-69v50l-130 69L0 186z" fill="#BCE9DA"/>
-    <path d="M0 210l130 69 130-69v50l-130 69L0 260z" fill="#FFFFFF"/>
-  </g>
+  <path d="M45 425l300-160 270 140-300 160z" fill="url(#plate)" stroke="#77D8C4" stroke-width="4"/>
+  <image href="concepts/feresa-mini-whale-mark-v1.png" x="72" y="40" width="390" height="390" preserveAspectRatio="xMidYMid meet"/>
   <text x="505" y="225" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="700">Feresa Slicer</text>
   <text x="510" y="288" fill="#BCE9DA" font-family="Arial, Helvetica, sans-serif" font-size="28">Mobile 3D printing workflow</text>
   <rect x="510" y="324" width="330" height="5" rx="2.5" fill="#FFFFFF" opacity=".65"/>
