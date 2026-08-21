@@ -142,10 +142,18 @@ data class OrcaCloudProfile(
     }
 }
 
+enum class OrcaProfileOrigin {
+    NONE,
+    CLOUD,
+    CACHE,
+    REVIEW_DEMO,
+}
+
 data class OrcaProfileSyncState(
     val profiles: List<OrcaCloudProfile> = emptyList(),
     val isLoading: Boolean = false,
     val isCached: Boolean = false,
     val lastSyncedAt: Long? = null,
     val error: String? = null,
+    val origin: OrcaProfileOrigin = OrcaProfileOrigin.NONE,
 )

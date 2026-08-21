@@ -1,1 +1,1 @@
-Slice 3D models on Android and send G-code to Moonraker or OctoPrint
+Slice 3D models on Android; send G-code via Moonraker or OctoPrint

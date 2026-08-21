@@ -26,6 +26,7 @@ class OrcaAuthViewModel(application: Application) : AndroidViewModel(application
 
     private var session: OrcaSession? = null
     private var loginJob: Job? = null
+    private var restoreJob: Job? = null
     @Volatile private var callbackServer: OrcaLoopbackServer? = null
 
     init {
@@ -33,6 +34,7 @@ class OrcaAuthViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun signIn(provider: OrcaAuthProvider) {
+        restoreJob?.cancel()
         cancelSignIn(updateState = false)
         loginJob = viewModelScope.launch {
             mutableState.value = OrcaAuthState.WaitingForBrowser(provider)
@@ -80,11 +82,41 @@ class OrcaAuthViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun syncProfiles() {
+        if (isReviewerDemoActive()) {
+            mutableProfileState.value = ReviewerDemoAccess.syncState()
+            return
+        }
         viewModelScope.launch { syncProfilesInternal() }
     }
 
-    fun signOut() {
+    fun enterReviewerDemo(username: String, password: String) {
+        restoreJob?.cancel()
         cancelSignIn(updateState = false)
+        if (!ReviewerDemoAccess.credentialsMatch(username, password)) {
+            mutableState.value = OrcaAuthState.Error(
+                "Неверные данные локального demo Google Play.",
+            )
+            return
+        }
+
+        // A demo login never owns an OrcaCloud session and must not inherit a live access token.
+        session = null
+        mutableProfileState.value = ReviewerDemoAccess.syncState()
+        mutableState.value = OrcaAuthState.SignedIn(
+            account = ReviewerDemoAccess.account,
+            mode = OrcaAuthMode.REVIEW_DEMO,
+        )
+    }
+
+    fun signOut() {
+        restoreJob?.cancel()
+        cancelSignIn(updateState = false)
+        if (isReviewerDemoActive()) {
+            session = null
+            mutableProfileState.value = OrcaProfileSyncState()
+            mutableState.value = OrcaAuthState.SignedOut
+            return
+        }
         val current = session
         session = null
         tokenStore.clear()
@@ -97,7 +129,8 @@ class OrcaAuthViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun restoreSession() {
-        viewModelScope.launch {
+        restoreJob?.cancel()
+        restoreJob = viewModelScope.launch {
             mutableState.value = OrcaAuthState.Loading
             val cached = withContext(Dispatchers.IO) { profileCache.read() }
             if (cached != null) {
@@ -105,6 +138,7 @@ class OrcaAuthViewModel(application: Application) : AndroidViewModel(application
                     profiles = cached.profiles,
                     isCached = true,
                     lastSyncedAt = cached.syncedAt,
+                    origin = OrcaProfileOrigin.CACHE,
                 )
             }
             val refreshToken = withContext(Dispatchers.IO) { tokenStore.read() }
@@ -135,7 +169,10 @@ class OrcaAuthViewModel(application: Application) : AndroidViewModel(application
         runCatching { tokenStore.write(newSession.refreshToken) }
             .onSuccess {
                 session = newSession
-                mutableState.value = OrcaAuthState.SignedIn(newSession.account)
+                mutableState.value = OrcaAuthState.SignedIn(
+                    account = newSession.account,
+                    mode = OrcaAuthMode.CLOUD,
+                )
                 accepted = true
                 val cached = profileCache.read()?.takeIf { it.userId == newSession.account.id }
                 if (cached != null) {
@@ -143,6 +180,7 @@ class OrcaAuthViewModel(application: Application) : AndroidViewModel(application
                         profiles = cached.profiles,
                         isCached = true,
                         lastSyncedAt = cached.syncedAt,
+                        origin = OrcaProfileOrigin.CACHE,
                     )
                 } else {
                     mutableProfileState.value = OrcaProfileSyncState()
@@ -204,6 +242,7 @@ class OrcaAuthViewModel(application: Application) : AndroidViewModel(application
                 isLoading = false,
                 isCached = false,
                 lastSyncedAt = syncedAt,
+                origin = OrcaProfileOrigin.CLOUD,
             )
         }.onFailure { error ->
             mutableProfileState.value = mutableProfileState.value.copy(
@@ -224,8 +263,12 @@ class OrcaAuthViewModel(application: Application) : AndroidViewModel(application
 
     override fun onCleared() {
         callbackServer?.close()
+        restoreJob?.cancel()
         super.onCleared()
     }
+
+    private fun isReviewerDemoActive(): Boolean =
+        (mutableState.value as? OrcaAuthState.SignedIn)?.mode == OrcaAuthMode.REVIEW_DEMO
 
     private fun constantTimeEquals(left: String, right: String): Boolean = MessageDigest.isEqual(
         left.toByteArray(Charsets.UTF_8),

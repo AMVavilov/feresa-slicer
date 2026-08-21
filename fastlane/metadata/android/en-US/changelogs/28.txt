@@ -1,0 +1,5 @@
+Google Play review build.
+• Added an offline reviewer demo for optional OrcaCloud profile screens
+• Bundled complete project and third-party license notices
+• Kept printer networking disabled in reviewer demo mode
+• Improved Russian and English review guidance

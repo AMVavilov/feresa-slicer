@@ -1,5 +1,5 @@
 Initial Google Play test release.
-• Local Orca-compatible slicing
+• Local slicing with AGPL-licensed OrcaSlicer components
 • STL, OBJ, and 3MF import
 • Multi-model build plate tools
 • Layer-by-layer G-code preview

@@ -229,6 +229,7 @@ fun PrintSettingsPanel(
     cloudProfiles: List<OrcaCloudProfile>,
     cloudProfilesLoading: Boolean,
     isSignedIn: Boolean,
+    isReviewerDemo: Boolean,
     settings: PrintSettingsState,
     detailLevel: PrintDetailLevel,
     category: PrintSettingsCategory,
@@ -307,7 +308,15 @@ fun PrintSettingsPanel(
                     }
                     HorizontalDivider()
                     DropdownMenuItem(
-                        text = { Text(if (cloudProfilesLoading) "Обновление…" else "↻ Обновить из OrcaCloud") },
+                        text = {
+                            Text(
+                                when {
+                                    cloudProfilesLoading -> "Обновление…"
+                                    isReviewerDemo -> "↻ Сбросить demo-профили"
+                                    else -> "↻ Обновить из OrcaCloud"
+                                },
+                            )
+                        },
                         enabled = isSignedIn && !cloudProfilesLoading,
                         onClick = {
                             profilesExpanded = false

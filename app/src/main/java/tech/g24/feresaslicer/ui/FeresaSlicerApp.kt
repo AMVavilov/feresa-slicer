@@ -91,6 +91,7 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
 import tech.g24.feresaslicer.auth.OrcaAuthProvider
+import tech.g24.feresaslicer.auth.OrcaAuthMode
 import tech.g24.feresaslicer.auth.OrcaAuthState
 import tech.g24.feresaslicer.auth.OrcaAuthViewModel
 import tech.g24.feresaslicer.R
@@ -98,6 +99,7 @@ import tech.g24.feresaslicer.BuildConfig
 import tech.g24.feresaslicer.auth.OrcaCloudProfile
 import tech.g24.feresaslicer.auth.OrcaPrinterConnection
 import tech.g24.feresaslicer.auth.OrcaProfileSyncState
+import tech.g24.feresaslicer.auth.OrcaProfileOrigin
 import tech.g24.feresaslicer.auth.OrcaProfileType
 import tech.g24.feresaslicer.auth.printerConnection
 import tech.g24.feresaslicer.catalog.OrcaSystemPrinterCatalog
@@ -285,6 +287,7 @@ fun FeresaSlicerApp() {
     val authViewModel: OrcaAuthViewModel = viewModel()
     val authState by authViewModel.state.collectAsState()
     val cloudProfileState by authViewModel.profileState.collectAsState()
+    val isReviewerDemo = (authState as? OrcaAuthState.SignedIn)?.mode == OrcaAuthMode.REVIEW_DEMO
     var destination by remember { mutableStateOf(AppDestination.MODEL) }
     var modelWorkspaceSection by remember { mutableStateOf(ModelWorkspaceSection.FILE) }
     var renameObjectId by remember { mutableStateOf<PlateObjectId?>(null) }
@@ -406,11 +409,18 @@ fun FeresaSlicerApp() {
         it.type == OrcaProfileType.PROCESS && it.name == processProfileName
     } ?: activeSystemProcessProfile?.takeIf { it.name == processProfileName }
     val profilePrinterConnection = activePrinterProfile?.printerConnection()
-    val activePrinterConnection = savedManualPrinterConnection
-        ?.takeIf(SavedManualPrinterConnection::isActive)
-        ?.connection
-        ?: profilePrinterConnection
+    // Google Play review mode is deliberately air-gapped: even a connection previously saved on
+    // the device is ignored until the reviewer leaves the local demo.
+    val activePrinterConnection = if (isReviewerDemo) {
+        null
+    } else {
+        savedManualPrinterConnection
+            ?.takeIf(SavedManualPrinterConnection::isActive)
+            ?.connection
+            ?: profilePrinterConnection
+    }
     val activePrinterConnectionSource = when {
+        isReviewerDemo -> null
         savedManualPrinterConnection?.isActive == true -> "Ручное подключение"
         profilePrinterConnection != null -> "Профиль OrcaCloud"
         else -> null
@@ -1383,6 +1393,7 @@ fun FeresaSlicerApp() {
                         systemCatalogLoading = isSystemCatalogLoading,
                         cloudState = cloudProfileState,
                         isOrcaSignedIn = authState is OrcaAuthState.SignedIn,
+                        isReviewerDemo = isReviewerDemo,
                         printerProfileName = printerProfileName,
                         filamentProfileName = filamentProfileName,
                         processProfileName = processProfileName,
@@ -1664,22 +1675,48 @@ fun FeresaSlicerApp() {
                         OrcaCloudAccountCard(
                             state = authState,
                             onSignIn = authViewModel::signIn,
+                            onReviewerDemoSignIn = authViewModel::enterReviewerDemo,
                             onCancel = authViewModel::cancelSignIn,
                             onRetry = authViewModel::retryRestore,
                             onSignOut = authViewModel::signOut,
+                            onManageAccount = {
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(
+                                            Intent.ACTION_VIEW,
+                                            Uri.parse(BuildConfig.ORCA_ACCOUNT_SETTINGS_URL),
+                                        ),
+                                    )
+                                }.onFailure {
+                                    errorMessage = "Не удалось открыть управление аккаунтом Orca Cloud"
+                                }
+                            },
                         )
                         SectionCard(title = "Синхронизация профилей") {
                             val printerCount = cloudProfileState.profiles.count { it.type == OrcaProfileType.PRINTER }
                             val filamentCount = cloudProfileState.profiles.count { it.type == OrcaProfileType.FILAMENT }
                             val processCount = cloudProfileState.profiles.count { it.type == OrcaProfileType.PROCESS }
                             if (cloudProfileState.profiles.isNotEmpty()) {
-                                Text("Загружено из OrcaCloud", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    if (isReviewerDemo) {
+                                        "Локальный demo для проверки Google Play"
+                                    } else {
+                                        "Загружено из OrcaCloud"
+                                    },
+                                    fontWeight = FontWeight.SemiBold,
+                                )
                                 Text(
                                     "Принтеры: $printerCount · филаменты: $filamentCount · печать: $processCount",
                                     color = Muted,
                                     fontSize = 13.sp,
                                 )
-                                if (cloudProfileState.isCached) {
+                                if (cloudProfileState.origin == OrcaProfileOrigin.REVIEW_DEMO) {
+                                    Text(
+                                        "Тестовые профили встроены в приложение; сеть не используется.",
+                                        color = Muted,
+                                        fontSize = 12.sp,
+                                    )
+                                } else if (cloudProfileState.isCached) {
                                     Text("Показаны данные из локального кэша", color = Muted, fontSize = 12.sp)
                                 }
                             } else {
@@ -1696,12 +1733,22 @@ fun FeresaSlicerApp() {
                                     enabled = !cloudProfileState.isLoading,
                                     modifier = Modifier.fillMaxWidth(),
                                 ) {
-                                    Text(if (cloudProfileState.isLoading) "Синхронизация…" else "Обновить профили")
+                                    Text(
+                                        when {
+                                            cloudProfileState.isLoading -> "Синхронизация…"
+                                            isReviewerDemo -> "Сбросить demo-профили"
+                                            else -> "Обновить профили"
+                                        },
+                                    )
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                "Только чтение: приложение загружает профили, но не изменяет данные OrcaCloud.",
+                                if (isReviewerDemo) {
+                                    "Demo не подключается к OrcaCloud, принтерам или пользовательским данным."
+                                } else {
+                                    "Только чтение: приложение загружает профили, но не изменяет данные OrcaCloud."
+                                },
                                 color = Muted,
                                 fontSize = 12.sp,
                             )
@@ -2269,6 +2316,7 @@ private fun ProfilesScreen(
     systemCatalogLoading: Boolean,
     cloudState: OrcaProfileSyncState,
     isOrcaSignedIn: Boolean,
+    isReviewerDemo: Boolean,
     printerProfileName: String,
     filamentProfileName: String,
     processProfileName: String,
@@ -2505,6 +2553,7 @@ private fun ProfilesScreen(
             cloudProfiles = cloudState.profiles.filter { it.type == OrcaProfileType.PROCESS },
             cloudProfilesLoading = cloudState.isLoading,
             isSignedIn = isOrcaSignedIn,
+            isReviewerDemo = isReviewerDemo,
             settings = printSettings,
             detailLevel = printDetailLevel,
             category = printSettingsCategory,
@@ -2536,6 +2585,7 @@ private fun ProfilesScreen(
                 requestedType == OrcaProfileType.PRINTER
             },
             isSignedIn = isOrcaSignedIn,
+            isReviewerDemo = isReviewerDemo,
             onRefresh = onSyncCloud,
             onOpenApp = onOpenApp,
             onApply = onApplyCloudProfile,
@@ -2808,12 +2858,13 @@ private fun OrcaCloudProfilesCard(
     activeName: String,
     activeProfileId: String?,
     isSignedIn: Boolean,
+    isReviewerDemo: Boolean,
     onRefresh: () -> Unit,
     onOpenApp: () -> Unit,
     onApply: (OrcaCloudProfile) -> Unit,
 ) {
     var showAllProfiles by remember(requestedType) { mutableStateOf(false) }
-    SectionCard(title = "Профили OrcaCloud") {
+    SectionCard(title = if (isReviewerDemo) "Локальные demo-профили" else "Профили OrcaCloud") {
         if (state.isLoading) {
             Text(
                 if (state.profiles.isEmpty()) "Загрузка профилей…" else "Обновление профилей…",
@@ -2831,7 +2882,11 @@ private fun OrcaCloudProfilesCard(
         when {
             profiles.isNotEmpty() -> {
                 Text(
-                    "Профилей: ${profiles.size} · ${if (state.isCached) "локальный кэш" else "загружены из облака"}",
+                    "Профилей: ${profiles.size} · ${when {
+                        isReviewerDemo -> "локальный demo"
+                        state.isCached -> "локальный кэш"
+                        else -> "загружены из облака"
+                    }}",
                     color = Muted,
                     fontSize = 12.sp,
                 )
@@ -2898,7 +2953,15 @@ private fun OrcaCloudProfilesCard(
                 onClick = onRefresh,
                 enabled = !state.isLoading,
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text(if (state.isLoading) "Синхронизация…" else "Обновить из OrcaCloud") }
+            ) {
+                Text(
+                    when {
+                        state.isLoading -> "Синхронизация…"
+                        isReviewerDemo -> "Сбросить demo-профили"
+                        else -> "Обновить из OrcaCloud"
+                    },
+                )
+            }
         }
     }
 }
@@ -2927,10 +2990,16 @@ private fun StatusCard() {
 private fun OrcaCloudAccountCard(
     state: OrcaAuthState,
     onSignIn: (OrcaAuthProvider) -> Unit,
+    onReviewerDemoSignIn: (String, String) -> Unit,
     onCancel: () -> Unit,
     onRetry: () -> Unit,
     onSignOut: () -> Unit,
+    onManageAccount: () -> Unit,
 ) {
+    var showReviewerDemoLogin by remember { mutableStateOf(false) }
+    var reviewerUsername by remember { mutableStateOf("") }
+    var reviewerPassword by remember { mutableStateOf("") }
+
     SectionCard(title = "Учётная запись OrcaCloud") {
         when (state) {
             OrcaAuthState.Loading -> Text("Проверка сохранённой сессии…", color = Muted)
@@ -2938,6 +3007,15 @@ private fun OrcaCloudAccountCard(
                 Text("Безопасный вход откроется в браузере. Приложение не получает ваш пароль.", color = Muted)
                 Spacer(Modifier.height(10.dp))
                 AuthProviderButtons(onSignIn)
+                ReviewerDemoLogin(
+                    expanded = showReviewerDemoLogin,
+                    username = reviewerUsername,
+                    password = reviewerPassword,
+                    onExpandedChange = { showReviewerDemoLogin = it },
+                    onUsernameChange = { reviewerUsername = it },
+                    onPasswordChange = { reviewerPassword = it },
+                    onSignIn = { onReviewerDemoSignIn(reviewerUsername, reviewerPassword) },
+                )
             }
             is OrcaAuthState.WaitingForBrowser -> {
                 Text("Завершите вход через ${state.provider.label} в браузере.", fontWeight = FontWeight.Medium)
@@ -2947,8 +3025,20 @@ private fun OrcaCloudAccountCard(
                 }
             }
             is OrcaAuthState.SignedIn -> {
+                if (state.mode == OrcaAuthMode.REVIEW_DEMO) {
+                    Text("Локальный demo для проверки Google Play", color = Accent, fontSize = 13.sp)
+                    Spacer(Modifier.height(6.dp))
+                }
                 Text(state.account.displayName, fontWeight = FontWeight.SemiBold)
                 if (state.account.email.isNotBlank()) Text(state.account.email, color = Muted, fontSize = 13.sp)
+                if (state.mode == OrcaAuthMode.REVIEW_DEMO) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Используются только встроенные тестовые профили. Сеть и реальные данные отключены.",
+                        color = Muted,
+                        fontSize = 12.sp,
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
                 OutlinedButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) {
                     Text("Выйти")
@@ -2964,8 +3054,77 @@ private fun OrcaCloudAccountCard(
                         modifier = Modifier.weight(1f),
                     ) { Text("Войти") }
                 }
+                ReviewerDemoLogin(
+                    expanded = showReviewerDemoLogin,
+                    username = reviewerUsername,
+                    password = reviewerPassword,
+                    onExpandedChange = { showReviewerDemoLogin = it },
+                    onUsernameChange = { reviewerUsername = it },
+                    onPasswordChange = { reviewerPassword = it },
+                    onSignIn = { onReviewerDemoSignIn(reviewerUsername, reviewerPassword) },
+                )
             }
         }
+        val isReviewerDemo = (state as? OrcaAuthState.SignedIn)?.mode == OrcaAuthMode.REVIEW_DEMO
+        if (!isReviewerDemo && state !is OrcaAuthState.Loading && state !is OrcaAuthState.WaitingForBrowser) {
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = onManageAccount, modifier = Modifier.fillMaxWidth()) {
+                Text("Управление и удаление аккаунта", color = Accent)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReviewerDemoLogin(
+    expanded: Boolean,
+    username: String,
+    password: String,
+    onExpandedChange: (Boolean) -> Unit,
+    onUsernameChange: (String) -> Unit,
+    onPasswordChange: (String) -> Unit,
+    onSignIn: () -> Unit,
+) {
+    Spacer(Modifier.height(12.dp))
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+    Spacer(Modifier.height(8.dp))
+    TextButton(
+        onClick = { onExpandedChange(!expanded) },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(if (expanded) "Скрыть локальный demo Google Play" else "Локальный demo для проверки Google Play")
+    }
+    if (!expanded) return
+
+    Text(
+        "Вход открывает встроенные тестовые профили без подключения к OrcaCloud или принтеру.",
+        color = Muted,
+        fontSize = 12.sp,
+    )
+    Spacer(Modifier.height(8.dp))
+    OutlinedTextField(
+        value = username,
+        onValueChange = onUsernameChange,
+        label = { Text("Demo-логин") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Spacer(Modifier.height(8.dp))
+    OutlinedTextField(
+        value = password,
+        onValueChange = onPasswordChange,
+        label = { Text("Demo-пароль") },
+        singleLine = true,
+        visualTransformation = PasswordVisualTransformation(),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Spacer(Modifier.height(8.dp))
+    OutlinedButton(
+        onClick = onSignIn,
+        enabled = username.isNotBlank() && password.isNotBlank(),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text("Открыть локальный demo")
     }
 }
 

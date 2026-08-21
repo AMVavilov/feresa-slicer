@@ -26,6 +26,8 @@ val uploadSigningConfigured = listOf(
     uploadKeyPassword,
 ).all { !it.isNullOrBlank() }
 
+val generatedLegalAssets = layout.buildDirectory.dir("generated/legalAssets")
+
 android {
     namespace = "tech.g24.feresaslicer"
     compileSdk = 36
@@ -35,8 +37,8 @@ android {
         applicationId = "tech.g24.feresaslicer"
         minSdk = 28
         targetSdk = 36
-        versionCode = 27
-        versionName = "0.14.0-alpha.1"
+        versionCode = 28
+        versionName = "0.14.0-alpha.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Public OrcaCloud client configuration from OrcaSlicer's AGPL source.
@@ -52,7 +54,12 @@ android {
         buildConfigField(
             "String",
             "PRIVACY_POLICY_URL",
-            "\"https://github.com/AMVavilov/feresa-slicer/blob/main/PRIVACY.md\"",
+            "\"https://sync-and-slice-g24.lovable.app/privacy\"",
+        )
+        buildConfigField(
+            "String",
+            "ORCA_ACCOUNT_SETTINGS_URL",
+            "\"https://cloud.orcaslicer.com/app/settings\"",
         )
 
         ndk {
@@ -118,8 +125,9 @@ android {
     }
 
     sourceSets {
-        getByName("main").assets.srcDir(
+        getByName("main").assets.srcDirs(
             layout.buildDirectory.dir("generated/orcaSystemPresets/assets"),
+            generatedLegalAssets,
         )
     }
 }
@@ -181,6 +189,21 @@ val fetchOrcaSystemPresets by tasks.registering(Exec::class) {
     outputs.dir(layout.buildDirectory.dir("generated/orcaSystemPresets/assets/orca_profiles"))
 }
 
+val syncLegalNotices by tasks.registering(Sync::class) {
+    group = "build setup"
+    description = "Packages project and third-party license notices as Android assets"
+
+    into(generatedLegalAssets.map { it.dir("legal") })
+    from(rootProject.file("LICENSE")) {
+        rename { "AGPL-3.0.txt" }
+    }
+    from(rootProject.file("NOTICE.md"))
+    from(rootProject.file("THIRD_PARTY_NOTICES.md"))
+    from(rootProject.file("third_party_licenses")) {
+        into("licenses")
+    }
+}
+
 tasks.named("preBuild").configure {
-    dependsOn(fetchOrcaMobileEngine, fetchOrcaSystemPresets)
+    dependsOn(fetchOrcaMobileEngine, fetchOrcaSystemPresets, syncLegalNotices)
 }

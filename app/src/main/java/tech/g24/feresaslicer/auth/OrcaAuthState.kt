@@ -12,10 +12,18 @@ enum class OrcaAuthProvider(val wireValue: String, val label: String) {
     GITHUB("github", "GitHub"),
 }
 
+enum class OrcaAuthMode {
+    CLOUD,
+    REVIEW_DEMO,
+}
+
 sealed interface OrcaAuthState {
     data object Loading : OrcaAuthState
     data object SignedOut : OrcaAuthState
     data class WaitingForBrowser(val provider: OrcaAuthProvider) : OrcaAuthState
-    data class SignedIn(val account: OrcaAccount) : OrcaAuthState
+    data class SignedIn(
+        val account: OrcaAccount,
+        val mode: OrcaAuthMode = OrcaAuthMode.CLOUD,
+    ) : OrcaAuthState
     data class Error(val message: String) : OrcaAuthState
 }

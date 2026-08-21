@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Privacy policy for the Feresa Slicer Android app.">
+  <title>Privacy Policy · Feresa Slicer</title>
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+  <header>
+    <img src="assets/icon.png" alt="Feresa Slicer icon" width="76" height="76">
+    <div>
+      <h1>Privacy Policy</h1>
+      <div class="tagline">Feresa Slicer · Updated August 21, 2026</div>
+    </div>
+  </header>
+  <main>
+    <nav><a href="index.html">Home</a><a href="#ru">Русская версия</a><a href="account-deletion.html">Account deletion</a></nav>
+    <section class="card">
+      <p class="notice"><strong>Summary:</strong> Feresa Slicer has no ads or analytics. Models and G-code are processed locally unless you explicitly send G-code to a printer you configured. Orca Cloud sign-in and synchronization are optional.</p>
+
+      <h2>Developer and contact</h2>
+      <p>Feresa Slicer is published on Google Play by <strong>make shop</strong>. Privacy and deletion questions may be submitted through the <a href="https://github.com/AMVavilov/feresa-slicer/issues">public issue tracker</a>.</p>
+
+      <h2>Information processed on the device</h2>
+      <ul>
+        <li>Imported STL, OBJ, and 3MF files and locally generated G-code.</li>
+        <li>Printer, filament, and process profiles.</li>
+        <li>When Orca Cloud is used: account identifier, email address, display name, refresh token, and synchronized profiles.</li>
+        <li>When a printer is configured: address, protocol, port, API key, and optional Basic Authentication credentials.</li>
+        <li>Language, theme, and other app preferences.</li>
+      </ul>
+      <p>Orca Cloud refresh tokens, synchronized profiles, and saved printer credentials are encrypted with keys held by Android Keystore. Android backup is disabled. Temporary slicing files are stored in the app's private storage.</p>
+
+      <h2>Network communication</h2>
+      <p>When you choose to sign in, Feresa Slicer opens your browser for Google or GitHub authentication and communicates directly with Orca Cloud. These exchanges are governed by the privacy terms of <a href="https://policies.google.com/privacy">Google</a>, <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub</a>, and <a href="https://www.orcaslicer.com/privacy-policy/">OrcaSlicer</a>.</p>
+      <p>When you test a printer connection or send G-code, the app communicates directly with the Moonraker or OctoPrint address you selected. A local printer may use unencrypted HTTP. Feresa Slicer warns before credentials are saved for HTTP; use HTTP only on a trusted local network.</p>
+      <p>Selected online services and printer endpoints may receive technical network metadata needed to process requests, such as IP address, timestamps, and protocol headers. The Feresa Slicer developers do not receive this metadata because requests are not proxied through a Feresa-operated server.</p>
+
+      <h2>Sharing, sale, and retention</h2>
+      <p>Feresa Slicer does not sell user data and does not share it for advertising. Data is exchanged only with services or devices you explicitly select for the requested feature.</p>
+      <p>Signing out removes the saved Orca Cloud session and cached profiles. Removing a printer connection deletes its saved connection data and credentials. Uninstalling the app removes its private application data.</p>
+
+      <h2>Account and data deletion</h2>
+      <p>Feresa Slicer does not operate Orca Cloud accounts. To permanently delete an Orca Cloud account and related cloud data, follow the <a href="account-deletion.html">account-deletion guide</a>.</p>
+
+      <h2>Children</h2>
+      <p>Feresa Slicer is a technical tool intended for users aged 13 and older. It is not directed to children under 13 and does not knowingly collect their personal data.</p>
+    </section>
+
+    <section class="card" id="ru" lang="ru">
+      <h1>Политика конфиденциальности</h1>
+      <p class="muted">Feresa Slicer · Обновлено 21 августа 2026 года</p>
+      <p class="notice"><strong>Кратко:</strong> в Feresa Slicer нет рекламы и аналитики. Модели и G-code обрабатываются локально, если пользователь сам не отправляет G-code на настроенный принтер. Вход и синхронизация Orca Cloud необязательны.</p>
+
+      <h2>Разработчик и контакты</h2>
+      <p>Feresa Slicer публикуется в Google Play разработчиком <strong>make shop</strong>. Вопросы о конфиденциальности и удалении данных можно отправить через <a href="https://github.com/AMVavilov/feresa-slicer/issues">публичный раздел обращений</a>.</p>
+
+      <h2>Данные на устройстве</h2>
+      <ul>
+        <li>Импортированные STL, OBJ и 3MF и созданный локально G-code.</li>
+        <li>Профили принтера, филамента и процесса печати.</li>
+        <li>При использовании Orca Cloud: идентификатор, email, отображаемое имя, токен обновления и синхронизированные профили.</li>
+        <li>При подключении принтера: адрес, протокол, порт, API-ключ и необязательные данные Basic Authentication.</li>
+        <li>Язык, тема и другие настройки приложения.</li>
+      </ul>
+      <p>Токен Orca Cloud, синхронизированные профили и сохранённые данные подключения к принтеру защищены ключами Android Keystore. Резервное копирование Android отключено. Временные файлы нарезки хранятся в закрытом хранилище приложения.</p>
+
+      <h2>Сетевые соединения</h2>
+      <p>При входе приложение открывает браузер для авторизации через Google или GitHub и напрямую обращается к Orca Cloud. Эти операции регулируются политиками <a href="https://policies.google.com/privacy">Google</a>, <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub</a> и <a href="https://www.orcaslicer.com/privacy-policy/">OrcaSlicer</a>.</p>
+      <p>При проверке соединения или отправке G-code приложение напрямую обращается к выбранному серверу Moonraker или OctoPrint. Локальный принтер может использовать незашифрованный HTTP. Используйте HTTP только в доверенной локальной сети.</p>
+      <p>Выбранные сервисы и сервер принтера могут получать необходимые для обработки запроса сетевые данные, например IP-адрес, время запроса и заголовки протокола. Разработчики Feresa Slicer не получают эти данные, так как соединения не проходят через сервер Feresa.</p>
+
+      <h2>Передача, продажа и хранение</h2>
+      <p>Feresa Slicer не продаёт данные и не передаёт их для рекламы. Данные передаются только выбранным пользователем сервисам или устройствам для выполнения запрошенной функции.</p>
+      <p>Выход удаляет локальную сессию Orca Cloud и кэш профилей. Удаление подключения очищает его данные и учётные данные. Удаление приложения очищает закрытые данные приложения.</p>
+
+      <h2>Удаление аккаунта и данных</h2>
+      <p>Feresa Slicer не управляет аккаунтами Orca Cloud. Для полного удаления аккаунта и облачных данных используйте <a href="account-deletion.html#ru">инструкцию по удалению</a>.</p>
+
+      <h2>Дети</h2>
+      <p>Feresa Slicer — технический инструмент для пользователей от 13 лет. Приложение не предназначено для детей младше 13 лет и сознательно не собирает их персональные данные.</p>
+    </section>
+  </main>
+  <footer>Feresa Slicer · Published by make shop</footer>
+</body>
+</html>
+

@@ -1,19 +1,19 @@
-Feresa Slicer brings a practical 3D-printing workflow to Android.
+Feresa Slicer brings local FDM slicing to Android.
 
-Import STL, OBJ, or 3MF models, arrange them on the build plate, configure real Orca-compatible print profiles, slice locally, inspect the layer-by-layer G-code toolpath, save the result, or send it to a Moonraker or OctoPrint printer.
+Import STL, OBJ, or 3MF models, arrange one or more models on the build plate, choose printer, filament, and process profiles, slice on the device, inspect the G-code toolpath layer by layer, save the result, or upload it to a printer through Moonraker or OctoPrint.
 
 Core features:
 • local on-device slicing without an account;
 • multiple models on one build plate;
 • position, rotation, scaling, lay-flat, duplication, and auto-arrangement tools;
-• built-in OrcaSlicer printer and process profiles;
+• built-in printer and process profiles derived from OrcaSlicer's AGPL-licensed system presets;
 • detailed print, filament, and printer settings;
 • G-code preview by layer, feature type, speed, width, and layer height;
 • optional read-only OrcaCloud profile synchronization;
-• optional direct upload and guarded print start through Moonraker or OctoPrint;
+• optional G-code upload and print start through Moonraker or OctoPrint after a printer-status check;
 • Russian and English interface with light and dark themes.
 
-Feresa Slicer is free and open-source software licensed under GNU AGPL-3.0. It uses and adapts AGPL-licensed OrcaSlicer components for mobile local slicing. Feresa Slicer is an independent community project and is not an official OrcaSlicer application or affiliated with the OrcaSlicer project.
+Feresa Slicer is open-source software licensed under GNU AGPL-3.0. It includes and adapts AGPL-licensed components from OrcaSlicer. Feresa Slicer is an independent community project. It is not an official OrcaSlicer app and is not affiliated with or endorsed by the OrcaSlicer project. References to OrcaSlicer and OrcaCloud identify compatible components and services only.
 
 Source code and third-party notices:
 https://github.com/AMVavilov/feresa-slicer
