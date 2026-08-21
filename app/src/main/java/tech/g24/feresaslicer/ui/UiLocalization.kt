@@ -204,6 +204,10 @@ private val ENGLISH_TEXT = mapOf(
     "Обновить профили" to "Refresh profiles",
     "Только чтение: приложение загружает профили, но не изменяет данные OrcaCloud." to "Read-only: the app downloads profiles but does not modify OrcaCloud data.",
     "AGPL-3.0 · Лицензия и исходный код" to "AGPL-3.0 · License and source code",
+    "Политика конфиденциальности" to "Privacy policy",
+    "Открыть исходный код" to "Open source code",
+    "Не удалось открыть политику конфиденциальности" to "Could not open the privacy policy",
+    "Не удалось открыть исходный код" to "Could not open the source code",
     "Закрыть" to "Close",
     "Свободное программное обеспечение" to "Free and open-source software",
     "Feresa Slicer распространяется по лицензии GNU AGPL версии 3. Исходный код, сценарии сборки, уведомления и текст лицензии включены в проект. Программа предоставляется без гарантий." to

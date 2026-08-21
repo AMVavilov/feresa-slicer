@@ -3,6 +3,7 @@ package tech.g24.feresaslicer.ui
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -93,6 +94,7 @@ import tech.g24.feresaslicer.auth.OrcaAuthProvider
 import tech.g24.feresaslicer.auth.OrcaAuthState
 import tech.g24.feresaslicer.auth.OrcaAuthViewModel
 import tech.g24.feresaslicer.R
+import tech.g24.feresaslicer.BuildConfig
 import tech.g24.feresaslicer.auth.OrcaCloudProfile
 import tech.g24.feresaslicer.auth.OrcaPrinterConnection
 import tech.g24.feresaslicer.auth.OrcaProfileSyncState
@@ -220,12 +222,13 @@ fun FeresaSlicerApp() {
         )
     }
     var uiLanguage by remember {
+        val defaultLanguage = resolveUiLanguage(Locale.getDefault())
         mutableStateOf(
             runCatching {
                 UiLanguage.valueOf(
-                    themePreferences.getString(LanguageModeKey, null) ?: UiLanguage.RUSSIAN.name,
+                    themePreferences.getString(LanguageModeKey, null) ?: defaultLanguage.name,
                 )
-            }.getOrDefault(UiLanguage.RUSSIAN),
+            }.getOrDefault(defaultLanguage),
         )
     }
     val useDarkTheme = when (themeMode) {
@@ -1705,6 +1708,20 @@ fun FeresaSlicerApp() {
                         }
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         TextButton(
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW, Uri.parse(BuildConfig.PRIVACY_POLICY_URL)),
+                                    )
+                                }.onFailure {
+                                    errorMessage = "Не удалось открыть политику конфиденциальности"
+                                }
+                            },
+                            modifier = Modifier.align(Alignment.CenterHorizontally),
+                        ) {
+                            Text("Политика конфиденциальности", color = Accent)
+                        }
+                        TextButton(
                             onClick = { showLicense = true },
                             modifier = Modifier.align(Alignment.CenterHorizontally),
                         ) {
@@ -1755,6 +1772,19 @@ fun FeresaSlicerApp() {
         AlertDialog(
             onDismissRequest = { showLicense = false },
             confirmButton = {
+                TextButton(
+                    onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(BuildConfig.SOURCE_CODE_URL)),
+                            )
+                        }.onFailure {
+                            errorMessage = "Не удалось открыть исходный код"
+                        }
+                    },
+                ) { Text("Открыть исходный код") }
+            },
+            dismissButton = {
                 TextButton(onClick = { showLicense = false }) { Text("Закрыть") }
             },
             title = { Text("Свободное программное обеспечение") },

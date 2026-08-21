@@ -1,20 +1,42 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val uploadSigningProperties = Properties().apply {
+    val localProperties = rootProject.file("keystore.properties")
+    if (localProperties.isFile) localProperties.inputStream().use(::load)
+}
+
+fun signingValue(propertyName: String, environmentName: String): String? =
+    uploadSigningProperties.getProperty(propertyName)?.trim()?.takeIf(String::isNotEmpty)
+        ?: System.getenv(environmentName)?.trim()?.takeIf(String::isNotEmpty)
+
+val uploadStoreFile = signingValue("storeFile", "FERESA_UPLOAD_STORE_FILE")
+val uploadStorePassword = signingValue("storePassword", "FERESA_UPLOAD_STORE_PASSWORD")
+val uploadKeyAlias = signingValue("keyAlias", "FERESA_UPLOAD_KEY_ALIAS")
+val uploadKeyPassword = signingValue("keyPassword", "FERESA_UPLOAD_KEY_PASSWORD")
+val uploadSigningConfigured = listOf(
+    uploadStoreFile,
+    uploadStorePassword,
+    uploadKeyAlias,
+    uploadKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "tech.g24.feresaslicer"
-    compileSdk = 35
+    compileSdk = 36
     ndkVersion = "27.1.12297006"
 
     defaultConfig {
         applicationId = "tech.g24.feresaslicer"
         minSdk = 28
-        targetSdk = 35
-        versionCode = 26
-        versionName = "0.13.0-alpha.1"
+        targetSdk = 36
+        versionCode = 27
+        versionName = "0.14.0-alpha.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Public OrcaCloud client configuration from OrcaSlicer's AGPL source.
@@ -22,6 +44,16 @@ android {
         buildConfigField("String", "ORCA_AUTH_URL", "\"https://auth.orcaslicer.com\"")
         buildConfigField("String", "ORCA_API_URL", "\"https://api.orcaslicer.com\"")
         buildConfigField("String", "ORCA_PUBLIC_KEY", "\"sb_publishable_lvVe_whOi80SU9BPSxM1kA_tbt9AbR_\"")
+        buildConfigField(
+            "String",
+            "SOURCE_CODE_URL",
+            "\"https://github.com/AMVavilov/feresa-slicer\"",
+        )
+        buildConfigField(
+            "String",
+            "PRIVACY_POLICY_URL",
+            "\"https://github.com/AMVavilov/feresa-slicer/blob/main/PRIVACY.md\"",
+        )
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -35,9 +67,24 @@ android {
         }
     }
 
+    signingConfigs {
+        if (uploadSigningConfigured) {
+            create("upload") {
+                storeFile = rootProject.file(requireNotNull(uploadStoreFile))
+                storePassword = uploadStorePassword
+                keyAlias = uploadKeyAlias
+                keyPassword = uploadKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.findByName("upload")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -74,6 +121,15 @@ android {
         getByName("main").assets.srcDir(
             layout.buildDirectory.dir("generated/orcaSystemPresets/assets"),
         )
+    }
+}
+
+tasks.matching { it.name == "bundleRelease" || it.name == "assembleRelease" }.configureEach {
+    doFirst {
+        check(uploadSigningConfigured) {
+            "Release signing is not configured. Copy keystore.properties.example to " +
+                "keystore.properties or set FERESA_UPLOAD_* environment variables."
+        }
     }
 }
 

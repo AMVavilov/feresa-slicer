@@ -1,0 +1,7 @@
+Initial Google Play test release.
+• Local Orca-compatible slicing
+• STL, OBJ, and 3MF import
+• Multi-model build plate tools
+• Layer-by-layer G-code preview
+• Moonraker and OctoPrint connection workflow
+• Optional OrcaCloud profile synchronization
