@@ -29,9 +29,9 @@ Target release: `0.16.0-alpha.1` (`versionCode` 31).
 - [x] Build the final upload-signed `app-release.aab` and APK, run
       `scripts/verify-16kb-aab.sh`, and record their SHA-256 values and sizes in
       `verification.md`.
-- [ ] Upload the final signed `app-release.aab`.
-- [ ] Upload the prepared localized text and graphics from `fastlane/metadata`.
-- [ ] Complete App content declarations using `app-content.md` and
+- [x] Upload the final signed `app-release.aab`.
+- [x] Upload the prepared localized text and graphics from `fastlane/metadata`.
+- [x] Complete App content declarations using `app-content.md` and
       `data-safety.md`.
 - [ ] Run internal testing, followed by closed testing if required for the
       developer account.

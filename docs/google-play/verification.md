@@ -72,9 +72,18 @@ The following release gates passed:
 - the signed release APK was cold-started on the official Android 16 KiB system
   image without linker, JNI, or native crash errors.
 
-Version code 31 is ready for Play upload. The Play-generated APK should also be
-installed from the test track on a supported ARM64 device before widening the
-rollout.
+Version code 31 passed the local release gate. The Play-generated APK should
+also be installed on a supported ARM64 device as a post-publication check.
+
+## Google Play submission
+
+- submitted on August 24, 2026 to the production track as a 100% rollout;
+- Play Console accepted version `31 (0.16.0-alpha.1)`, target SDK 36, and the
+  `arm64-v8a` delivery ABI;
+- the release review reported `Ready to release` and no longer reported the
+  16 KiB memory-page compatibility error from version code 30;
+- Google Play's pre-submission common-problem check completed without findings;
+- the release and localized store-listing changes are now under Google review.
 
 ## Known release constraints
 
