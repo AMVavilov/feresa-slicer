@@ -19,11 +19,54 @@ import {
     createLatestRequestGate,
     disposeObject3DResources,
 } from "./viewer-lifecycle.mjs";
+import {
+    cameraDistanceToFrameSphere,
+    createCameraViewPreference,
+} from "./camera-view.mjs";
 
 const canvas = document.getElementById("scene");
 const statusElement = document.getElementById("status");
 const fallbackElement = document.getElementById("fallback");
 const resetButton = document.getElementById("reset");
+const queryParams = new URLSearchParams(window.location.search);
+const cameraViewPreference = createCameraViewPreference();
+const viewerLanguage = queryParams.get("lang") === "ru" ? "ru" : "en";
+const viewerText = {
+    ru: {
+        waitingModel: "Загрузите STL-модель",
+        loadingModel: "Загрузка STL…",
+        loadingModels: "Загрузка STL-моделей…",
+        gestureHint: "Проведите для вращения · сведите пальцы для масштаба",
+        resetCamera: "Сбросить вид",
+        previewUnavailable: "3D-просмотр недоступен. Числовые настройки положения остаются доступны.",
+        noVisibleToolpaths: "Нет видимых траекторий",
+        loadingGcode: "Загрузка просмотра G-code…",
+        selected: "Выбрано",
+        models: "моделей · коснитесь модели для выбора",
+        segments: "сегментов",
+        toolpathSegments: "сегментов траектории",
+        layers: "слои",
+    },
+    en: {
+        waitingModel: "Load an STL model",
+        loadingModel: "Loading STL…",
+        loadingModels: "Loading STL models…",
+        gestureHint: "Drag to rotate · pinch to zoom",
+        resetCamera: "Reset view",
+        previewUnavailable: "3D preview is unavailable. Numeric placement controls remain available.",
+        noVisibleToolpaths: "No visible toolpaths",
+        loadingGcode: "Loading G-code preview…",
+        selected: "Selected",
+        models: "models · tap a model to select",
+        segments: "segments",
+        toolpathSegments: "toolpath segments",
+        layers: "layers",
+    },
+}[viewerLanguage];
+
+statusElement.textContent = viewerText.waitingModel;
+resetButton.textContent = viewerText.resetCamera;
+fallbackElement.textContent = viewerText.previewUnavailable;
 
 let renderer;
 let camera;
@@ -41,7 +84,9 @@ let bedWidth = 220;
 let bedDepth = 220;
 let bedGroup = null;
 let renderQueued = false;
-let darkTheme = new URLSearchParams(window.location.search).get("theme") === "dark";
+let cameraTransitionFrame = null;
+let cameraTransitionGeneration = 0;
+let darkTheme = queryParams.get("theme") === "dark";
 const toolpathPreview = {
     minimumLayer: 0,
     maximumLayer: Number.MAX_SAFE_INTEGER,
@@ -112,7 +157,8 @@ function initRenderer() {
     controls.screenSpacePanning = false;
     controls.minDistance = 25;
     controls.maxDistance = 1200;
-    controls.maxPolarAngle = Math.PI * 0.49;
+    controls.minPolarAngle = 0;
+    controls.maxPolarAngle = Math.PI;
     controls.addEventListener("change", requestRender);
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x718078, 2.3));
@@ -169,8 +215,10 @@ function rebuildBed() {
 
 function resetCamera() {
     if (!camera || !controls) return;
+    cancelCameraTransition();
     const span = Math.max(bedWidth, bedDepth);
     camera.position.set(span * 0.72, span * 0.62, span * 0.82);
+    camera.up.set(0, 1, 0);
     controls.target.set(0, 12, 0);
     controls.update();
     requestRender();
@@ -193,6 +241,7 @@ function modelBounds() {
 
 function frameAll() {
     if (!camera || !controls) return;
+    cancelCameraTransition();
     const bounds = modelBounds();
     if (!bounds) {
         resetCamera();
@@ -213,6 +262,113 @@ function frameAll() {
     controls.target.copy(center);
     controls.update();
     requestRender();
+}
+
+function activeViewBounds() {
+    if (viewMode === "toolpath" && toolpathLines) {
+        const toolpathBounds = new THREE.Box3().setFromObject(toolpathLines);
+        if (!toolpathBounds.isEmpty()) return toolpathBounds;
+    }
+    const bounds = modelBounds();
+    if (bounds) return bounds;
+    return new THREE.Box3(
+        new THREE.Vector3(-bedWidth / 2, 0, -bedDepth / 2),
+        new THREE.Vector3(bedWidth / 2, 0, bedDepth / 2),
+    );
+}
+
+function cameraFramingRadius(bounds, target) {
+    const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+    return sphere.radius + sphere.center.distanceTo(target);
+}
+
+function cancelCameraTransition() {
+    cameraTransitionGeneration += 1;
+    if (cameraTransitionFrame != null) cancelAnimationFrame(cameraTransitionFrame);
+    cameraTransitionFrame = null;
+    if (controls) controls.enabled = true;
+}
+
+function finishCameraView(position, target, up) {
+    camera.position.copy(position);
+    camera.up.copy(up);
+    controls.target.copy(target);
+    camera.lookAt(target);
+    controls.update();
+    controls.enabled = true;
+    cameraTransitionFrame = null;
+    requestRender();
+}
+
+/**
+ * Rotates the camera to a named view while retaining the current orbit target
+ * and zoom. The distance only grows when required to keep the active models,
+ * toolpath, or (for an empty scene) print bed inside the viewport.
+ */
+function applyCameraViewDefinition(definition, options = {}) {
+    if (!camera || !controls) return false;
+    const direction = new THREE.Vector3(...definition.direction).normalize();
+    const up = new THREE.Vector3(...definition.up).normalize();
+    const target = controls.target.clone();
+    const currentDistance = Math.max(camera.position.distanceTo(target), controls.minDistance);
+    const radius = cameraFramingRadius(activeViewBounds(), target);
+    const framingDistance = cameraDistanceToFrameSphere({
+        radius,
+        verticalFovDegrees: camera.fov,
+        aspect: camera.aspect,
+        margin: options.margin,
+    });
+    const distance = Math.max(currentDistance, framingDistance, controls.minDistance);
+    const destination = target.clone().addScaledVector(direction, distance);
+    camera.near = Math.max(0.1, distance / 1000);
+    camera.far = Math.max(3000, distance * 20);
+    camera.updateProjectionMatrix();
+    controls.maxDistance = Math.max(1200, distance * 1.25);
+
+    const durationMs = Math.max(0, Number(options.durationMs ?? 320) || 0);
+    cancelCameraTransition();
+    if (durationMs === 0) {
+        finishCameraView(destination, target, up);
+        return true;
+    }
+
+    const transitionGeneration = cameraTransitionGeneration;
+    const startTime = performance.now();
+    const startPosition = camera.position.clone();
+    const startQuaternion = camera.quaternion.clone();
+    const destinationCamera = camera.clone();
+    destinationCamera.position.copy(destination);
+    destinationCamera.up.copy(up);
+    destinationCamera.lookAt(target);
+    const destinationQuaternion = destinationCamera.quaternion.clone();
+    controls.enabled = false;
+
+    const animateCamera = (time) => {
+        if (transitionGeneration !== cameraTransitionGeneration) return;
+        const progress = Math.min(1, Math.max(0, (time - startTime) / durationMs));
+        const eased = 1 - Math.pow(1 - progress, 3);
+        camera.position.lerpVectors(startPosition, destination, eased);
+        camera.quaternion.slerpQuaternions(startQuaternion, destinationQuaternion, eased);
+        requestRender();
+        if (progress < 1) {
+            cameraTransitionFrame = requestAnimationFrame(animateCamera);
+        } else {
+            finishCameraView(destination, target, up);
+        }
+    };
+    cameraTransitionFrame = requestAnimationFrame(animateCamera);
+    return true;
+}
+
+function setCameraView(preset, options = {}) {
+    return applyCameraViewDefinition(cameraViewPreference.select(preset), options);
+}
+
+function restoreCameraViewAfterFraming() {
+    const definition = cameraViewPreference.current();
+    if (definition.preset !== "isometric") {
+        applyCameraViewDefinition(definition, { durationMs: 0 });
+    }
 }
 
 function transformGeometryFromStl(geometry) {
@@ -281,8 +437,9 @@ function clearModels() {
     setViewMode("model");
     reportObjectSelection(null, "api");
     statusElement.style.color = "#4f5852";
-    statusElement.textContent = "Загрузите STL-модель";
+    statusElement.textContent = viewerText.waitingModel;
     frameAll();
+    restoreCameraViewAfterFraming();
 }
 
 function modelRequestUrl(url, version) {
@@ -301,15 +458,16 @@ async function loadModels(input) {
     setViewMode("model");
     statusElement.style.color = "#4f5852";
     statusElement.textContent = payload.objects.length > 1
-        ? `Загрузка ${payload.objects.length} STL…`
+        ? `${viewerText.loadingModels} (${payload.objects.length})`
         : payload.objects.length === 1
-            ? "Загрузка STL…"
-            : "Загрузите STL-модель";
+            ? viewerText.loadingModel
+            : viewerText.waitingModel;
 
     if (payload.objects.length === 0) {
         disposeLoadedModels();
         reportObjectSelection(null, "api");
         frameAll();
+        restoreCameraViewAfterFraming();
         return;
     }
 
@@ -338,10 +496,13 @@ async function loadModels(input) {
         setViewMode(viewMode);
         selectObject(payload.selectedObjectId, true, "api");
         reportSceneState(true);
-        if (payload.frameAll) frameAll();
+        if (payload.frameAll) {
+            frameAll();
+            restoreCameraViewAfterFraming();
+        }
         statusElement.textContent = payload.objects.length > 1
-            ? `${payload.objects.length} моделей · коснитесь модели для выбора`
-            : "Проведите для вращения · сведите пальцы для масштаба";
+            ? `${payload.objects.length} ${viewerText.models}`
+            : viewerText.gestureHint;
         requestRender();
     } catch (error) {
         if (!modelRequestGate.isCurrent(requestToken)) return;
@@ -573,7 +734,7 @@ function rebuildToolpath() {
         colors.push(color.r, color.g, color.b, color.r, color.g, color.b);
     }
     if (positions.length === 0) {
-        statusElement.textContent = "Нет видимых траекторий";
+        statusElement.textContent = viewerText.noVisibleToolpaths;
         requestRender();
         return;
     }
@@ -588,7 +749,7 @@ function rebuildToolpath() {
     toolpathEligibleSegmentCount = eligible.length;
     scene.add(toolpathLines);
     toolpathLines.visible = viewMode === "toolpath";
-    statusElement.textContent = `${toolpathSegmentCount} / ${toolpathEligibleSegmentCount} сегментов · слои ${toolpathPreview.minimumLayer + 1}–${Math.min(toolpathPreview.maximumLayer + 1, toolpathData.layerCount)}`;
+    statusElement.textContent = `${toolpathSegmentCount} / ${toolpathEligibleSegmentCount} ${viewerText.segments} · ${viewerText.layers} ${toolpathPreview.minimumLayer + 1}–${Math.min(toolpathPreview.maximumLayer + 1, toolpathData.layerCount)}`;
     requestRender();
 }
 
@@ -599,7 +760,7 @@ function setToolpathPreview(payload) {
 
 async function loadToolpath(version = Date.now()) {
     const requestToken = gcodeRequestGate.begin();
-    statusElement.textContent = "Загрузка просмотра G-code…";
+    statusElement.textContent = viewerText.loadingGcode;
     try {
         const response = await fetch(`../../model/current.gcode?v=${encodeURIComponent(version)}`, { cache: "no-store" });
         if (!response.ok) throw new Error(`G-code request failed (${response.status})`);
@@ -627,10 +788,10 @@ function setViewMode(mode) {
     }
     if (toolpathLines) toolpathLines.visible = viewMode === "toolpath";
     statusElement.textContent = viewMode === "toolpath" && toolpathSegmentCount > 0
-        ? `${toolpathSegmentCount} / ${toolpathEligibleSegmentCount} сегментов траектории`
+        ? `${toolpathSegmentCount} / ${toolpathEligibleSegmentCount} ${viewerText.toolpathSegments}`
         : modelObjects.size > 1
-            ? `${modelObjects.size} моделей · коснитесь модели для выбора`
-            : "Проведите для вращения · сведите пальцы для масштаба";
+            ? `${modelObjects.size} ${viewerText.models}`
+            : viewerText.gestureHint;
     requestRender();
 }
 
@@ -647,7 +808,7 @@ function selectObjectAtPointer(event) {
     const intersection = raycaster.intersectObjects(meshes, false)[0];
     const objectId = intersection?.object?.userData?.objectId ?? null;
     selectObject(objectId, true, "pointer");
-    if (objectId != null) statusElement.textContent = `Выбрано: ${objectId}`;
+    if (objectId != null) statusElement.textContent = `${viewerText.selected}: ${objectId}`;
 }
 
 function onPointerDown(event) {
@@ -702,6 +863,7 @@ window.FeresaSlicerViewer = {
     setTheme,
     setViewMode,
     setToolpathPreview,
+    setCameraView,
     frameAll,
     resetCamera,
 };

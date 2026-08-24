@@ -3,6 +3,8 @@
 This directory contains the project-side material for the Russian and English
 Google Play listing. Play Console remains the source of truth for policy forms.
 
+Target release: `0.15.0-alpha.2` (`versionCode` 30).
+
 ## Release gates
 
 - [x] Package name fixed as `tech.g24.feresaslicer`.
@@ -12,16 +14,19 @@ Google Play listing. Play Console remains the source of truth for policy forms.
 - [x] Privacy policy and Data safety draft prepared.
 - [x] Ads declaration: no ads.
 - [x] Only the `INTERNET` permission is requested.
-- [x] Release AAB built and validated locally with Bundletool using a temporary
-      verification key. This artifact must not be uploaded to Play Console.
-- [x] 512×512 icon, 1024×500 feature graphic, and three current phone
+- [x] Viewer test suite passed: 32/32 tests.
+- [x] JVM unit tests passed.
+- [x] `lintRelease` passed.
+- [x] 512×512 icon, 1024×500 feature graphic, and four current phone
       screenshots prepared for each locale.
-- [ ] Create the permanent upload key and store it outside Git/through the team
-      secret manager.
-- [ ] Configure Play App Signing in Play Console.
-- [ ] Make the AGPL source repository and `PRIVACY.md` publicly accessible, or
-      host both at another stable public HTTPS URL and update `BuildConfig`.
-- [ ] Build and upload the signed `app-release.aab`.
+- [x] Permanent upload key created; the keystore and password are stored
+      outside Git in the macOS user keychain.
+- [x] Play App Signing enabled in Play Console.
+- [x] AGPL source repository is public at
+      <https://github.com/AMVavilov/feresa-slicer> and linked from the app.
+- [x] Build the final upload-signed `app-release.aab`, validate it with
+      Bundletool, and record its SHA-256 and size in `verification.md`.
+- [ ] Upload the final signed `app-release.aab`.
 - [ ] Upload the prepared localized text and graphics from `fastlane/metadata`.
 - [ ] Complete App content declarations using `app-content.md` and
       `data-safety.md`.
@@ -66,5 +71,6 @@ fastlane/metadata/android/ru-RU/
 
 The files can be copied into Play Console manually even if Fastlane is not used.
 
-The generated images are located in each locale's `images` directory. Store
-screenshots use a Play-compatible 1080×2160 (2:1) phone aspect ratio.
+The generated images are located in each locale's `images` directory. Each
+locale has four phone screenshots using a Play-compatible 1080×2160 (2:1)
+aspect ratio.

@@ -139,10 +139,13 @@ class OrcaAuthViewModel(application: Application) : AndroidViewModel(application
                     isCached = true,
                     lastSyncedAt = cached.syncedAt,
                     origin = OrcaProfileOrigin.CACHE,
+                    ownerAccountId = cached.userId,
                 )
             }
             val refreshToken = withContext(Dispatchers.IO) { tokenStore.read() }
             if (refreshToken.isNullOrBlank()) {
+                profileCache.clear()
+                mutableProfileState.value = OrcaProfileSyncState()
                 mutableState.value = OrcaAuthState.SignedOut
                 return@launch
             }
@@ -181,6 +184,7 @@ class OrcaAuthViewModel(application: Application) : AndroidViewModel(application
                         isCached = true,
                         lastSyncedAt = cached.syncedAt,
                         origin = OrcaProfileOrigin.CACHE,
+                        ownerAccountId = cached.userId,
                     )
                 } else {
                     mutableProfileState.value = OrcaProfileSyncState()
@@ -243,6 +247,7 @@ class OrcaAuthViewModel(application: Application) : AndroidViewModel(application
                 isCached = false,
                 lastSyncedAt = syncedAt,
                 origin = OrcaProfileOrigin.CLOUD,
+                ownerAccountId = current.account.id,
             )
         }.onFailure { error ->
             mutableProfileState.value = mutableProfileState.value.copy(

@@ -12,11 +12,12 @@
         html, body { width: 100vw; min-height: 100vh; margin: 0; overflow: hidden; background: var(--viewer-bg); font-family: sans-serif; }
         #scene { position: fixed; inset: 0; display: block; width: 100vw; height: 100vh; touch-action: none; }
         #status {
-            position: absolute; left: 12px; top: 12px; max-width: calc(100% - 24px);
+            position: absolute; left: 12px; right: 76px; top: 12px;
             padding: 7px 10px; border-radius: 9px; background: var(--panel-bg);
             color: var(--text); font-size: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.08);
-            pointer-events: none;
+            overflow: hidden; white-space: nowrap; text-overflow: ellipsis; pointer-events: none;
         }
+        :root[data-viewer-status="hidden"] #status { display: none; }
         #reset {
             position: absolute; right: 12px; bottom: 12px; border: 1px solid #006b57;
             border-radius: 9px; padding: 8px 11px; background: var(--panel-bg);
@@ -28,9 +29,13 @@
         }
     </style>
     <script>
-        document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") === "dark"
+        const viewerQuery = new URLSearchParams(location.search);
+        document.documentElement.dataset.theme = viewerQuery.get("theme") === "dark"
             ? "dark"
             : "light";
+        document.documentElement.dataset.viewerStatus = viewerQuery.get("status") === "hidden"
+            ? "hidden"
+            : "visible";
     </script>
 </head>
 <body>

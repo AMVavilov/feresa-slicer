@@ -1,0 +1,4 @@
+• Print settings and selected profiles now persist between app launches.
+• Fixed filament selection for inherited Orca profiles and materials with duplicate names.
+• Updated the 3D preview with a full-screen build plate, smoother rotation, and reliable quick camera views.
+• Improved Russian and English localization.

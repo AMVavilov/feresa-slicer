@@ -6,14 +6,18 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -50,14 +54,17 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,9 +79,14 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import tech.g24.feresaslicer.slicer.OrcaDynamicPrintConfigBuilder
@@ -212,7 +224,14 @@ private data class PrinterDialogResult(
 @Composable
 fun FeresaSlicerApp() {
     val context = LocalContext.current
+    val applicationContext = context.applicationContext
     val scope = rememberCoroutineScope()
+    val slicerSettingsStore = remember(applicationContext) {
+        SlicerSettingsStore(applicationContext)
+    }
+    val restoredSlicerSettings = remember(applicationContext) {
+        slicerSettingsStore.read()
+    }
     val themePreferences = remember(context) {
         context.getSharedPreferences(ThemePreferences, Context.MODE_PRIVATE)
     }
@@ -272,11 +291,10 @@ fun FeresaSlicerApp() {
     var printerDialogResult by remember { mutableStateOf<PrinterDialogResult?>(null) }
     var viewerSceneState by remember { mutableStateOf<ViewerSceneState?>(null) }
     var viewerMode by remember { mutableStateOf(ViewerMode.MODEL) }
-    var bedWidth by remember { mutableStateOf(220.0) }
-    var bedDepth by remember { mutableStateOf(220.0) }
-    var printableHeight by remember { mutableStateOf(250.0) }
-    var printerFirmware by remember { mutableStateOf("marlin") }
-    val applicationContext = context.applicationContext
+    var bedWidth by remember { mutableStateOf(restoredSlicerSettings.bedWidth) }
+    var bedDepth by remember { mutableStateOf(restoredSlicerSettings.bedDepth) }
+    var printableHeight by remember { mutableStateOf(restoredSlicerSettings.printableHeight) }
+    var printerFirmware by remember { mutableStateOf(restoredSlicerSettings.printerFirmware) }
     var systemPresetCatalog by remember(applicationContext) {
         mutableStateOf<OrcaSystemPresetCatalog?>(null)
     }
@@ -295,6 +313,9 @@ fun FeresaSlicerApp() {
     var linkScaleAxes by remember { mutableStateOf(true) }
     var modelActionMessage by remember { mutableStateOf<String?>(null) }
     var cameraResetRequest by remember { mutableStateOf(0) }
+    var selectedCameraViewPreset by remember { mutableStateOf(CameraViewPreset.ISOMETRIC) }
+    var cameraViewRequest by remember { mutableStateOf<CameraViewRequest?>(null) }
+    var cameraViewRequestId by remember { mutableStateOf(0) }
     var toolpathMinimumLayer by remember { mutableStateOf(0) }
     var toolpathMaximumLayer by remember { mutableStateOf(0) }
     var toolpathColorMode by remember { mutableStateOf(ToolpathColorMode.LINE_WIDTH) }
@@ -371,22 +392,30 @@ fun FeresaSlicerApp() {
         }
     }
 
-    var printSettings by remember { mutableStateOf(PrintSettingsState()) }
-    var dirtyProcessSettingKeys by remember { mutableStateOf(emptySet<String>()) }
-    var printDetailLevel by remember { mutableStateOf(PrintDetailLevel.ADVANCED) }
-    var printSettingsCategory by remember { mutableStateOf(PrintSettingsCategory.QUALITY) }
+    var printSettings by remember { mutableStateOf(restoredSlicerSettings.printSettings) }
+    var dirtyProcessSettingKeys by remember {
+        mutableStateOf(restoredSlicerSettings.dirtyProcessSettingKeys)
+    }
+    var printDetailLevel by remember { mutableStateOf(restoredSlicerSettings.printDetailLevel) }
+    var printSettingsCategory by remember { mutableStateOf(restoredSlicerSettings.printSettingsCategory) }
     val layerHeight = printSettings.layerHeight
     val printSpeed = printSettings.printSpeed
-    var nozzleDiameter by remember { mutableStateOf("0.40") }
-    var filamentDiameter by remember { mutableStateOf("1.75") }
-    var nozzleTemperature by remember { mutableStateOf("210") }
-    var bedTemperature by remember { mutableStateOf("60") }
-    var printerProfileName by remember { mutableStateOf("Generic 220") }
-    var filamentProfileName by remember { mutableStateOf("Generic PLA") }
-    var processProfileName by remember { mutableStateOf("Standard quality") }
-    var activeCloudPrinterProfileId by remember { mutableStateOf<String?>(null) }
-    var activeSystemPrinterProfile by remember { mutableStateOf<OrcaCloudProfile?>(null) }
-    var activeSystemProcessProfile by remember { mutableStateOf<OrcaCloudProfile?>(null) }
+    var nozzleDiameter by remember { mutableStateOf(restoredSlicerSettings.nozzleDiameter) }
+    var filamentDiameter by remember { mutableStateOf(restoredSlicerSettings.filamentDiameter) }
+    var nozzleTemperature by remember { mutableStateOf(restoredSlicerSettings.nozzleTemperature) }
+    var bedTemperature by remember { mutableStateOf(restoredSlicerSettings.bedTemperature) }
+    var printerProfileName by remember { mutableStateOf(restoredSlicerSettings.printerProfileName) }
+    var filamentProfileName by remember { mutableStateOf(restoredSlicerSettings.filamentProfileName) }
+    var processProfileName by remember { mutableStateOf(restoredSlicerSettings.processProfileName) }
+    var selectedPrinterProfileRef by remember {
+        mutableStateOf(restoredSlicerSettings.printerProfileRef)
+    }
+    var selectedFilamentProfileRef by remember {
+        mutableStateOf(restoredSlicerSettings.filamentProfileRef)
+    }
+    var selectedProcessProfileRef by remember {
+        mutableStateOf(restoredSlicerSettings.processProfileRef)
+    }
     val manualPrinterConnectionStore = remember(applicationContext) {
         ManualPrinterConnectionStore(applicationContext)
     }
@@ -394,20 +423,75 @@ fun FeresaSlicerApp() {
         mutableStateOf(manualPrinterConnectionStore.read())
     }
 
-    val activePrinterProfile = activeCloudPrinterProfileId?.let { selectedId ->
-        cloudProfileState.profiles.firstOrNull {
-            it.type == OrcaProfileType.PRINTER && it.id == selectedId
-        }
-    } ?: activeSystemPrinterProfile?.takeIf { it.name == printerProfileName }
-        ?: cloudProfileState.profiles.firstOrNull {
-            it.type == OrcaProfileType.PRINTER && it.name == printerProfileName
-        }
-    val activeFilamentProfile = cloudProfileState.profiles.firstOrNull {
-        it.type == OrcaProfileType.FILAMENT && it.name == filamentProfileName
+    val activePrinterProfile = resolvePersistedProfileRef(
+        reference = selectedPrinterProfileRef,
+        authState = authState,
+        cloudProfiles = cloudProfileState.profiles,
+        cloudProfileOwnerAccountId = cloudProfileState.ownerAccountId,
+        systemCatalog = systemPresetCatalog,
+    )
+    val activeFilamentProfile = resolvePersistedProfileRef(
+        reference = selectedFilamentProfileRef,
+        authState = authState,
+        cloudProfiles = cloudProfileState.profiles,
+        cloudProfileOwnerAccountId = cloudProfileState.ownerAccountId,
+        systemCatalog = systemPresetCatalog,
+    )
+    val activeProcessProfile = resolvePersistedProfileRef(
+        reference = selectedProcessProfileRef,
+        authState = authState,
+        cloudProfiles = cloudProfileState.profiles,
+        cloudProfileOwnerAccountId = cloudProfileState.ownerAccountId,
+        systemCatalog = systemPresetCatalog,
+    )
+    fun currentSlicerSettingsSnapshot() = PersistedSlicerSettings(
+        printSettings = printSettings,
+        dirtyProcessSettingKeys = dirtyProcessSettingKeys,
+        printDetailLevel = printDetailLevel,
+        printSettingsCategory = printSettingsCategory,
+        nozzleDiameter = nozzleDiameter,
+        filamentDiameter = filamentDiameter,
+        nozzleTemperature = nozzleTemperature,
+        bedTemperature = bedTemperature,
+        bedWidth = bedWidth,
+        bedDepth = bedDepth,
+        printableHeight = printableHeight,
+        printerFirmware = printerFirmware,
+        printerProfileName = printerProfileName,
+        filamentProfileName = filamentProfileName,
+        processProfileName = processProfileName,
+        printerProfileRef = selectedPrinterProfileRef,
+        filamentProfileRef = selectedFilamentProfileRef,
+        processProfileRef = selectedProcessProfileRef,
+    )
+
+    val latestSlicerSettings = rememberUpdatedState(currentSlicerSettingsSnapshot())
+    val slicerSettingsWriteQueue = remember(slicerSettingsStore) {
+        SlicerSettingsWriteQueue(
+            writeSettings = slicerSettingsStore::write,
+            onFailure = { Log.e("FeresaSettings", "Could not persist slicer settings", it) },
+        )
     }
-    val activeProcessProfile = cloudProfileState.profiles.firstOrNull {
-        it.type == OrcaProfileType.PROCESS && it.name == processProfileName
-    } ?: activeSystemProcessProfile?.takeIf { it.name == processProfileName }
+    LaunchedEffect(slicerSettingsWriteQueue) {
+        snapshotFlow { currentSlicerSettingsSnapshot() }
+            .distinctUntilChanged()
+            .collect(slicerSettingsWriteQueue::enqueue)
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, slicerSettingsWriteQueue) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                slicerSettingsWriteQueue.enqueue(latestSlicerSettings.value)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+    DisposableEffect(slicerSettingsWriteQueue) {
+        onDispose { slicerSettingsWriteQueue.close(latestSlicerSettings.value) }
+    }
     val profilePrinterConnection = activePrinterProfile?.printerConnection()
     // Google Play review mode is deliberately air-gapped: even a connection previously saved on
     // the device is ignored until the reviewer leaves the local demo.
@@ -460,15 +544,9 @@ fun FeresaSlicerApp() {
     LaunchedEffect(cloudProfileState.profiles, systemPresetCatalog) {
         val connectedProfile = cloudProfileState.profiles
             .firstOrNull { it.printerConnection()?.hostType?.canSendGcode == true }
-        if (activeCloudPrinterProfileId != null &&
-            cloudProfileState.profiles.none { it.id == activeCloudPrinterProfileId }
-        ) {
-            activeCloudPrinterProfileId = null
-        }
         val presetCatalog = systemPresetCatalog ?: return@LaunchedEffect
-        if (printerProfileName == "Generic 220" && activeCloudPrinterProfileId == null) {
+        if (printerProfileName == "Generic 220" && selectedPrinterProfileRef == null) {
             connectedProfile?.let { profile ->
-                activeCloudPrinterProfileId = profile.id
                 runCatching {
                     resolveProfileSettingsForUi(
                         catalog = presetCatalog,
@@ -477,7 +555,10 @@ fun FeresaSlicerApp() {
                     )
                 }.onSuccess { resolved ->
                     printerProfileName = profile.name
-                    activeSystemPrinterProfile = null
+                    selectedPrinterProfileRef = profile.toPersistedCloudRef(
+                        authState = authState,
+                        cachedOwnerAccountId = cloudProfileState.ownerAccountId,
+                    )
                     firstProfileSetting(resolved, "nozzle_diameter")?.let { nozzleDiameter = it }
                     printerDimensions(resolved)?.let { (width, depth) ->
                         bedWidth = width
@@ -733,7 +814,11 @@ fun FeresaSlicerApp() {
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    if (destination == AppDestination.MODEL && hasPlateModels) {
+                    if (
+                        destination == AppDestination.MODEL &&
+                        hasPlateModels &&
+                        modelWorkspaceSection != ModelWorkspaceSection.VIEW
+                    ) {
                         ModelWorkspaceNavigation(
                             selected = modelWorkspaceSection,
                             onSelect = { modelWorkspaceSection = it },
@@ -784,6 +869,86 @@ fun FeresaSlicerApp() {
             },
         ) { contentPadding ->
             key(destination) {
+            val showFullScreenModelPreview =
+                destination == AppDestination.MODEL &&
+                    hasPlateModels &&
+                    modelWorkspaceSection == ModelWorkspaceSection.VIEW
+
+            if (showFullScreenModelPreview) {
+                Box(
+                    modifier = Modifier
+                        .padding(
+                            top = contentPadding.calculateTopPadding(),
+                            bottom = contentPadding.calculateBottomPadding(),
+                        )
+                        .fillMaxSize(),
+                ) {
+                    ModelViewer(
+                        modelFile = selectedFile,
+                        gcodeFile = null,
+                        transform = modelTransform,
+                        bedWidth = bedWidth,
+                        bedDepth = bedDepth,
+                        mode = ViewerMode.MODEL,
+                        darkTheme = useDarkTheme,
+                        cameraResetRequest = cameraResetRequest,
+                        cameraViewRequest = cameraViewRequest,
+                        modelObjects = viewerModelObjects,
+                        selectedObjectId = plateWorkspace.selectedObjectId?.value,
+                        onObjectSelected = ::applyViewerSelection,
+                        onSceneState = {
+                            viewerSceneState = it
+                            viewerMessage = null
+                        },
+                        onError = { viewerMessage = it },
+                        viewerHeight = null,
+                        showStatus = false,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CameraViewPresetOverlay(
+                            selectedPreset = selectedCameraViewPreset,
+                            onSelect = { preset ->
+                                selectedCameraViewPreset = preset
+                                cameraViewRequestId += 1
+                                cameraViewRequest = CameraViewRequest(
+                                    requestId = cameraViewRequestId,
+                                    preset = preset,
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        viewerMessage?.let { message ->
+                            androidx.compose.material3.Surface(
+                                modifier = Modifier
+                                    .padding(horizontal = 12.dp)
+                                    .fillMaxWidth(),
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                                shape = RoundedCornerShape(14.dp),
+                                shadowElevation = 6.dp,
+                                tonalElevation = 2.dp,
+                            ) {
+                                Text(
+                                    text = message,
+                                    modifier = Modifier.padding(12.dp),
+                                    fontSize = 12.sp,
+                                )
+                            }
+                        }
+                    }
+                    ModelWorkspaceNavigation(
+                        selected = modelWorkspaceSection,
+                        onSelect = { modelWorkspaceSection = it },
+                        modifier = Modifier.align(Alignment.BottomCenter),
+                    )
+                }
+            } else {
             Column(
                 modifier = Modifier
                     .padding(contentPadding)
@@ -1397,7 +1562,9 @@ fun FeresaSlicerApp() {
                         printerProfileName = printerProfileName,
                         filamentProfileName = filamentProfileName,
                         processProfileName = processProfileName,
-                        activeCloudPrinterProfileId = activeCloudPrinterProfileId,
+                        activePrinterProfileId = activePrinterProfile?.id,
+                        activeFilamentProfileId = activeFilamentProfile?.id,
+                        activeProcessProfileId = activeProcessProfile?.id,
                         activePrinterConnection = activePrinterConnection,
                         activePrinterConnectionSource = activePrinterConnectionSource,
                         savedManualPrinterConnection = savedManualPrinterConnection,
@@ -1480,19 +1647,24 @@ fun FeresaSlicerApp() {
                                     catalog = presetCatalog,
                                     profile = profile,
                                     availableProfiles = cloudProfileState.profiles,
+                                    printerContext = activePrinterProfile.takeUnless {
+                                        profile.type == OrcaProfileType.PRINTER
+                                    },
                                 )
                             }.onSuccess { resolved ->
                                 when (profile.type) {
                                     OrcaProfileType.PRINTER -> {
                                         printerProfileName = profile.name
-                                        activeCloudPrinterProfileId = profile.id
+                                        selectedPrinterProfileRef = profile.toPersistedCloudRef(
+                                            authState = authState,
+                                            cachedOwnerAccountId = cloudProfileState.ownerAccountId,
+                                        )
                                         profile.printerConnection()?.let {
                                             savedManualPrinterConnection?.let { saved ->
                                                 manualPrinterConnectionStore.write(saved.connection, isActive = false)
                                                 savedManualPrinterConnection = saved.copy(isActive = false)
                                             }
                                         }
-                                        activeSystemPrinterProfile = null
                                         firstProfileSetting(resolved, "nozzle_diameter")
                                             ?.let { nozzleDiameter = it }
                                         printerDimensions(resolved)?.let { (width, depth) ->
@@ -1520,6 +1692,10 @@ fun FeresaSlicerApp() {
                                     }
                                     OrcaProfileType.FILAMENT -> {
                                         filamentProfileName = profile.name
+                                        selectedFilamentProfileRef = profile.toPersistedCloudRef(
+                                            authState = authState,
+                                            cachedOwnerAccountId = cloudProfileState.ownerAccountId,
+                                        )
                                         firstProfileSetting(resolved, "filament_diameter")
                                             ?.let { filamentDiameter = it }
                                         firstProfileSetting(
@@ -1536,7 +1712,10 @@ fun FeresaSlicerApp() {
                                     }
                                     OrcaProfileType.PROCESS -> {
                                         processProfileName = profile.name
-                                        activeSystemProcessProfile = null
+                                        selectedProcessProfileRef = profile.toPersistedCloudRef(
+                                            authState = authState,
+                                            cachedOwnerAccountId = cloudProfileState.ownerAccountId,
+                                        )
                                         printSettings = printSettings.applyOrcaSettings(resolved)
                                         dirtyProcessSettingKeys = if (
                                             resolved["support_type"].orEmpty().contains("(manual)")
@@ -1591,9 +1770,15 @@ fun FeresaSlicerApp() {
                                 }
                                 Triple(bundledPrinter, printerSettings, bundledProcess to processSettings)
                             }.onSuccess { (bundledPrinter, resolvedPrinter, process) ->
+                                val contextHint = "${profile.vendor} ${profile.family} ${profile.model}"
                                 printerProfileName = profile.name
-                                activeCloudPrinterProfileId = null
-                                activeSystemPrinterProfile = bundledPrinter
+                                selectedPrinterProfileRef = PersistedProfileRef(
+                                    origin = PersistedProfileOrigin.SYSTEM,
+                                    type = OrcaProfileType.PRINTER,
+                                    id = bundledPrinter.id,
+                                    name = bundledPrinter.name,
+                                    contextHint = contextHint,
+                                )
                                 firstProfileSetting(resolvedPrinter, "nozzle_diameter")
                                     ?.let { nozzleDiameter = it }
                                     ?: run { nozzleDiameter = formatProfileNumber(profile.nozzleDiameter) }
@@ -1618,7 +1803,15 @@ fun FeresaSlicerApp() {
                                     ?.let { printerFirmware = it }
                                     ?: run { printerFirmware = profile.gcodeFlavor }
 
-                                activeSystemProcessProfile = process.first
+                                selectedProcessProfileRef = process.first?.let { bundledProcess ->
+                                    PersistedProfileRef(
+                                        origin = PersistedProfileOrigin.SYSTEM,
+                                        type = OrcaProfileType.PROCESS,
+                                        id = bundledProcess.id,
+                                        name = bundledProcess.name,
+                                        contextHint = "$contextHint ${profile.name}",
+                                    )
+                                }
                                 if (process.first != null && process.second != null) {
                                     processProfileName = process.first!!.name
                                     printSettings = printSettings.applyOrcaSettings(process.second!!)
@@ -1776,6 +1969,7 @@ fun FeresaSlicerApp() {
                         }
                     }
                 }
+            }
             }
             }
         }
@@ -2116,9 +2310,82 @@ private fun ThemeModeSelector(
 }
 
 @Composable
+private fun CameraViewPresetOverlay(
+    selectedPreset: CameraViewPreset,
+    onSelect: (CameraViewPreset) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val language = currentUiLanguage()
+    androidx.compose.material3.Surface(
+        modifier = modifier.padding(start = 12.dp, top = 12.dp, end = 12.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 10.dp,
+        tonalElevation = 4.dp,
+    ) {
+        LazyRow(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 7.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            items(CameraViewPreset.entries, key = CameraViewPreset::name) { preset ->
+                val label = cameraViewPresetLabel(preset, language)
+                val isSelected = preset == selectedPreset
+                androidx.compose.material3.Surface(
+                    modifier = Modifier
+                        .width(72.dp)
+                        .clickable { onSelect(preset) },
+                    color = if (isSelected) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        Color.Transparent
+                    },
+                    contentColor = if (isSelected) Accent else Muted,
+                    shape = RoundedCornerShape(15.dp),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_workspace_camera),
+                            contentDescription = label,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text(
+                            text = label,
+                            fontSize = 9.sp,
+                            lineHeight = 10.sp,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun cameraViewPresetLabel(
+    preset: CameraViewPreset,
+    language: UiLanguage,
+): String = when (preset) {
+    CameraViewPreset.ISOMETRIC -> if (language == UiLanguage.RUSSIAN) "Изометрия" else "Isometric"
+    CameraViewPreset.TOP -> if (language == UiLanguage.RUSSIAN) "Сверху" else "Top"
+    CameraViewPreset.BOTTOM -> if (language == UiLanguage.RUSSIAN) "Снизу" else "Bottom"
+    CameraViewPreset.FRONT -> if (language == UiLanguage.RUSSIAN) "Спереди" else "Front"
+    CameraViewPreset.BACK -> if (language == UiLanguage.RUSSIAN) "Сзади" else "Back"
+    CameraViewPreset.LEFT -> if (language == UiLanguage.RUSSIAN) "Слева" else "Left"
+    CameraViewPreset.RIGHT -> if (language == UiLanguage.RUSSIAN) "Справа" else "Right"
+}
+
+@Composable
 private fun ModelWorkspaceNavigation(
     selected: ModelWorkspaceSection,
     onSelect: (ModelWorkspaceSection) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val sections = listOf(
         ModelWorkspaceSection.VIEW,
@@ -2126,7 +2393,7 @@ private fun ModelWorkspaceNavigation(
         ModelWorkspaceSection.SLICE,
     )
     androidx.compose.material3.Surface(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 58.dp, vertical = 8.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -2320,7 +2587,9 @@ private fun ProfilesScreen(
     printerProfileName: String,
     filamentProfileName: String,
     processProfileName: String,
-    activeCloudPrinterProfileId: String?,
+    activePrinterProfileId: String?,
+    activeFilamentProfileId: String?,
+    activeProcessProfileId: String?,
     activePrinterConnection: OrcaPrinterConnection?,
     activePrinterConnectionSource: String?,
     savedManualPrinterConnection: SavedManualPrinterConnection?,
@@ -2550,6 +2819,7 @@ private fun ProfilesScreen(
     if (selected == ProfileSection.PROCESS) {
         PrintSettingsPanel(
             profileName = processProfileName,
+            activeProfileId = activeProcessProfileId,
             cloudProfiles = cloudState.profiles.filter { it.type == OrcaProfileType.PROCESS },
             cloudProfilesLoading = cloudState.isLoading,
             isSignedIn = isOrcaSignedIn,
@@ -2571,18 +2841,15 @@ private fun ProfilesScreen(
         ProfileSection.FILAMENT -> OrcaProfileType.FILAMENT
         ProfileSection.PROCESS -> OrcaProfileType.PROCESS
     }
-    val activeName = when (selected) {
-        ProfileSection.PRINTER -> printerProfileName
-        ProfileSection.FILAMENT -> filamentProfileName
-        ProfileSection.PROCESS -> processProfileName
-    }
     if (selected != ProfileSection.PROCESS) {
         OrcaCloudProfilesCard(
             state = cloudState,
             requestedType = requestedType,
-            activeName = activeName,
-            activeProfileId = activeCloudPrinterProfileId.takeIf {
-                requestedType == OrcaProfileType.PRINTER
+            activeProfileId = when (requestedType) {
+                OrcaProfileType.PRINTER -> activePrinterProfileId
+                OrcaProfileType.FILAMENT -> activeFilamentProfileId
+                OrcaProfileType.PROCESS -> activeProcessProfileId
+                OrcaProfileType.OTHER -> null
             },
             isSignedIn = isOrcaSignedIn,
             isReviewerDemo = isReviewerDemo,
@@ -2855,7 +3122,6 @@ private fun formatProfileNumber(value: Double): String =
 private fun OrcaCloudProfilesCard(
     state: OrcaProfileSyncState,
     requestedType: OrcaProfileType,
-    activeName: String,
     activeProfileId: String?,
     isSignedIn: Boolean,
     isReviewerDemo: Boolean,
@@ -2893,6 +3159,10 @@ private fun OrcaCloudProfilesCard(
                 Spacer(Modifier.height(8.dp))
                 val visibleProfiles = if (showAllProfiles) profiles else profiles.take(8)
                 visibleProfiles.forEach { profile ->
+                    val isSelectedProfile = profileMatchesSelection(
+                        profile = profile,
+                        activeProfileId = activeProfileId,
+                    )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -2908,20 +3178,14 @@ private fun OrcaCloudProfilesCard(
                                     )
                                 }
                             }
-                            val isSelectedProfile = profile.name == activeName
-                            val isActiveConnection = requestedType == OrcaProfileType.PRINTER &&
-                                profile.id == activeProfileId
                             if (isSelectedProfile) {
                                 Text("Активен", color = Accent, fontSize = 12.sp)
-                            } else if (isActiveConnection) {
-                                Text("Используется для подключения", color = Accent, fontSize = 12.sp)
                             }
                         }
                         TextButton(onClick = { onApply(profile) }) {
                             Text(
                                 when {
-                                    profile.name == activeName -> "Выбран"
-                                    requestedType == OrcaProfileType.PRINTER && profile.id == activeProfileId -> "Подключён"
+                                    isSelectedProfile -> "Выбран"
                                     else -> "Выбрать"
                                 }
                             )
@@ -3858,10 +4122,63 @@ private val UiResolvedProfileKeys: Set<String> by lazy {
     )
 }
 
-private fun resolveProfileSettingsForUi(
+internal fun OrcaCloudProfile.toPersistedCloudRef(
+    authState: OrcaAuthState,
+    cachedOwnerAccountId: String?,
+): PersistedProfileRef {
+    val ownerAccountId = (authState as? OrcaAuthState.SignedIn)?.account?.id
+        ?: cachedOwnerAccountId
+    require(!ownerAccountId.isNullOrBlank()) {
+        "Cannot select an OrcaCloud profile without its owning account"
+    }
+    return PersistedProfileRef(
+        origin = PersistedProfileOrigin.CLOUD,
+        type = type,
+        id = id,
+        name = name,
+        accountId = ownerAccountId,
+    )
+}
+
+internal fun resolvePersistedProfileRef(
+    reference: PersistedProfileRef?,
+    authState: OrcaAuthState,
+    cloudProfiles: List<OrcaCloudProfile>,
+    cloudProfileOwnerAccountId: String?,
+    systemCatalog: OrcaSystemPresetCatalog?,
+): OrcaCloudProfile? {
+    reference ?: return null
+    return when (reference.origin) {
+        PersistedProfileOrigin.CLOUD -> {
+            val accountMatches = when (authState) {
+                is OrcaAuthState.SignedIn -> reference.accountId != null &&
+                    reference.accountId == authState.account.id &&
+                    reference.accountId == cloudProfileOwnerAccountId
+                OrcaAuthState.Loading, is OrcaAuthState.Error -> reference.accountId != null &&
+                    reference.accountId == cloudProfileOwnerAccountId
+                OrcaAuthState.SignedOut, is OrcaAuthState.WaitingForBrowser -> false
+            }
+            if (!accountMatches) null else cloudProfiles.firstOrNull {
+                it.type == reference.type && it.id == reference.id
+            }
+        }
+        PersistedProfileOrigin.SYSTEM -> systemCatalog?.let { catalog ->
+            catalog.bundledProfileById(reference.id, reference.type) ?: runCatching {
+                catalog.bundledProfile(
+                    type = reference.type,
+                    name = reference.name,
+                    contextHint = reference.contextHint ?: reference.name,
+                )
+            }.getOrNull()
+        }
+    }
+}
+
+internal fun resolveProfileSettingsForUi(
     catalog: OrcaSystemPresetCatalog,
     profile: OrcaCloudProfile,
     availableProfiles: List<OrcaCloudProfile>,
+    printerContext: OrcaCloudProfile? = null,
 ): Map<String, String> {
     val selected = when (profile.type) {
         OrcaProfileType.PRINTER -> OrcaSelectedProfiles(
@@ -3869,10 +4186,12 @@ private fun resolveProfileSettingsForUi(
             availableCloudProfiles = availableProfiles,
         )
         OrcaProfileType.FILAMENT -> OrcaSelectedProfiles(
+            printer = printerContext,
             filament = profile,
             availableCloudProfiles = availableProfiles,
         )
         OrcaProfileType.PROCESS -> OrcaSelectedProfiles(
+            printer = printerContext,
             process = profile,
             availableCloudProfiles = availableProfiles,
         )

@@ -76,6 +76,7 @@ internal object ReviewerDemoAccess {
     fun syncState(): OrcaProfileSyncState = OrcaProfileSyncState(
         profiles = profiles,
         origin = OrcaProfileOrigin.REVIEW_DEMO,
+        ownerAccountId = account.id,
     )
 
     private fun profile(

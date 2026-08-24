@@ -524,11 +524,12 @@ private val ENGLISH_TEXT = mapOf(
 )
 
 private val ENGLISH_REPLACEMENTS: List<Pair<String, String>> = buildList {
-    addAll(ENGLISH_TEXT.entries.sortedByDescending { it.key.length }.map { it.key to it.value })
+    addAll(ENGLISH_TEXT.entries.map { it.key to it.value })
     addAll(
         listOf(
             "Модель находится в пределах стола" to "Model is within the print bed",
             "Границы" to "Bounds",
+            " · В " to " · H ",
             "Размер:" to "Size:",
             "Принтеры:" to "Printers:",
             "филаменты:" to "filaments:",
@@ -605,4 +606,4 @@ private val ENGLISH_REPLACEMENTS: List<Pair<String, String>> = buildList {
             " Б" to " B",
         ),
     )
-}
+}.sortedByDescending { it.first.length }

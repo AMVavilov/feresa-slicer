@@ -1,4 +1,4 @@
-Feresa Slicer brings local FDM slicing to Android.
+Feresa Slicer is an independent mobile port of OrcaSlicer that brings local FDM slicing to Android.
 
 Import STL, OBJ, or 3MF models, arrange one or more models on the build plate, choose printer, filament, and process profiles, slice on the device, inspect the G-code toolpath layer by layer, save the result, or upload it to a printer through Moonraker or OctoPrint.
 

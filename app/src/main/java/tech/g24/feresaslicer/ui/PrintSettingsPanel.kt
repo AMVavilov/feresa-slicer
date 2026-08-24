@@ -52,6 +52,11 @@ enum class PrintSettingsCategory(val label: String) {
     OTHERS("Прочее"),
 }
 
+internal fun profileMatchesSelection(
+    profile: OrcaCloudProfile,
+    activeProfileId: String?,
+): Boolean = activeProfileId != null && profile.id == activeProfileId
+
 data class PrintSettingsState(
     val layerHeight: String = "0.20",
     val initialLayerHeight: String = "0.20",
@@ -226,6 +231,7 @@ private fun PrintSettingsState.applyOrcaSettingValues(
 @Composable
 fun PrintSettingsPanel(
     profileName: String,
+    activeProfileId: String?,
     cloudProfiles: List<OrcaCloudProfile>,
     cloudProfilesLoading: Boolean,
     isSignedIn: Boolean,
@@ -294,7 +300,7 @@ fun PrintSettingsPanel(
                                 text = {
                                     Column {
                                         Text(profile.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                        if (profile.name == profileName) {
+                                        if (profileMatchesSelection(profile, activeProfileId)) {
                                             Text("Выбран", color = MaterialTheme.colorScheme.primary, fontSize = 11.sp)
                                         }
                                     }

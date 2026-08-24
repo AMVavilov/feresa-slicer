@@ -65,7 +65,12 @@ class OrcaSystemPresetCatalog private constructor(
                 val systemParent = resolveSystemPreset(
                     type = profile.type,
                     requestedName = inheritedName,
-                    contextHint = "$inheritedName $printerHint",
+                    contextHint = buildString {
+                        append(inheritedName)
+                        val provenanceHint = printerHint.takeIf(String::isNotBlank)
+                            ?: profile.serializedSetting("compatible_printers")
+                        provenanceHint?.let { append(' ').append(it) }
+                    },
                 )
                 val flattened = flattenSystemPreset(systemParent, linkedSetOf())
                 val aliasKey = "${profile.type}:$inheritedName"
@@ -93,6 +98,14 @@ class OrcaSystemPresetCatalog private constructor(
             contextHint = contextHint,
         )
         return flattenSystemPreset(preset, linkedSetOf()).toCloudAlias(name)
+    }
+
+    /** Restores a previously selected bundled preset without relying on a non-unique name. */
+    fun bundledProfileById(id: String, type: OrcaProfileType): OrcaCloudProfile? {
+        val preset = presets.firstOrNull { candidate ->
+            candidate.type == type && candidate.cloudAliasId(candidate.name) == id
+        } ?: return null
+        return flattenSystemPreset(preset, linkedSetOf()).toCloudAlias(preset.name)
     }
 
     fun hasBundledProfile(
@@ -196,13 +209,16 @@ class OrcaSystemPresetCatalog private constructor(
             content.put(key, JSONArray().put(value))
         }
         return OrcaCloudProfile(
-            id = "system:${sourceBundle}:${type.wireValue}:$requestedName",
+            id = cloudAliasId(requestedName),
             name = requestedName,
             type = type,
             contentJson = content.toString(),
             updatedTime = 0L,
         )
     }
+
+    private fun OrcaSystemPreset.cloudAliasId(requestedName: String): String =
+        "system:${sourceBundle}:${type.wireValue}:$requestedName"
 
     private fun profileIdentity(profile: OrcaCloudProfile): String =
         "${profile.type}:${profile.id.ifBlank { profile.name }}"

@@ -156,4 +156,6 @@ data class OrcaProfileSyncState(
     val lastSyncedAt: Long? = null,
     val error: String? = null,
     val origin: OrcaProfileOrigin = OrcaProfileOrigin.NONE,
+    /** Account that owns [profiles], including an encrypted offline cache. */
+    val ownerAccountId: String? = null,
 )

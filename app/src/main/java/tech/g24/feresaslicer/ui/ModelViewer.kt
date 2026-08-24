@@ -14,6 +14,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -155,6 +156,25 @@ enum class ViewerMode(val wireValue: String) {
     TOOLPATH("toolpath"),
 }
 
+enum class CameraViewPreset(val wireValue: String) {
+    ISOMETRIC("isometric"),
+    TOP("top"),
+    BOTTOM("bottom"),
+    FRONT("front"),
+    BACK("back"),
+    LEFT("left"),
+    RIGHT("right"),
+}
+
+/**
+ * A requestId makes repeated selections of the same camera preset observable
+ * by Compose and therefore repeatable by the embedded viewer.
+ */
+data class CameraViewRequest(
+    val requestId: Int,
+    val preset: CameraViewPreset,
+)
+
 enum class ToolpathColorMode(val wireValue: String, val label: String) {
     LINE_WIDTH("lineWidth", "Ширина линии"),
     LINE_TYPE("lineType", "Тип линии"),
@@ -293,17 +313,21 @@ fun ModelViewer(
     showExtrusion: Boolean = true,
     showTravel: Boolean = false,
     cameraResetRequest: Int = 0,
+    cameraViewRequest: CameraViewRequest? = null,
     onSceneState: (ViewerSceneState) -> Unit,
     onToolpathSelection: (ViewerToolpathSelection?) -> Unit = {},
     onError: (String) -> Unit,
-    viewerHeight: Dp = 330.dp,
+    viewerHeight: Dp? = 330.dp,
+    showStatus: Boolean = true,
     modifier: Modifier = Modifier,
     modelObjects: List<ViewerModelObject> = emptyList(),
     selectedObjectId: String? = null,
     onObjectSelected: (ViewerObjectSelection) -> Unit = {},
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val viewerContentDescription = if (currentUiLanguage() == UiLanguage.RUSSIAN) {
+    val uiLanguage = currentUiLanguage()
+    val viewerLanguage = if (uiLanguage == UiLanguage.RUSSIAN) "ru" else "en"
+    val viewerContentDescription = if (uiLanguage == UiLanguage.RUSSIAN) {
         "Предпросмотр 3D-модели и траектории"
     } else {
         "3D model and toolpath preview"
@@ -373,7 +397,9 @@ fun ModelViewer(
                     }
                     loadUrl(
                         "https://appassets.androidplatform.net/assets/viewer/index.html?theme=" +
-                            if (darkTheme) "dark" else "light",
+                            (if (darkTheme) "dark" else "light") +
+                            "&lang=$viewerLanguage" +
+                            "&status=${if (showStatus) "visible" else "hidden"}",
                     )
                     webView = this
                 }
@@ -387,7 +413,13 @@ fun ModelViewer(
             },
             modifier = modifier
                 .fillMaxWidth()
-                .height(viewerHeight)
+                .then(
+                    if (viewerHeight != null) {
+                        Modifier.height(viewerHeight)
+                    } else {
+                        Modifier.fillMaxHeight()
+                    },
+                )
                 .semantics { contentDescription = viewerContentDescription },
         )
     }
@@ -538,6 +570,16 @@ fun ModelViewer(
         if (viewerReady && cameraResetRequest > 0) {
             webView?.evaluateJavascript(
                 "window.FeresaSlicerViewer.resetCamera()",
+                null,
+            )
+        }
+    }
+
+    LaunchedEffect(viewerReady, cameraViewRequest) {
+        if (viewerReady && cameraViewRequest != null) {
+            val preset = JSONObject.quote(cameraViewRequest.preset.wireValue)
+            webView?.evaluateJavascript(
+                "window.FeresaSlicerViewer.setCameraView($preset)",
                 null,
             )
         }
