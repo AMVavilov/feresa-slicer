@@ -21,6 +21,13 @@ if(ANDROID)
         slicer_engine
         log
     )
+
+    # NDK r28 enables flexible page sizes by default. Keep the linker contract
+    # explicit as a defensive check for locally overridden toolchains.
+    target_link_options(feresa_slicer PRIVATE
+        "-Wl,-z,max-page-size=16384"
+        "-Wl,-z,common-page-size=16384"
+    )
 endif()
 
 option(FERESA_SLICER_BUILD_TESTS "Build native host tests" OFF)

@@ -31,14 +31,14 @@ val generatedLegalAssets = layout.buildDirectory.dir("generated/legalAssets")
 android {
     namespace = "tech.g24.feresaslicer"
     compileSdk = 36
-    ndkVersion = "27.1.12297006"
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "tech.g24.feresaslicer"
         minSdk = 28
         targetSdk = 36
-        versionCode = 30
-        versionName = "0.15.0-alpha.2"
+        versionCode = 31
+        versionName = "0.16.0-alpha.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Public OrcaCloud client configuration from OrcaSlicer's AGPL source.
@@ -68,7 +68,10 @@ android {
 
         externalNativeBuild {
             cmake {
-                arguments += "-DANDROID_STL=c++_shared"
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
+                )
                 cppFlags += listOf("-std=c++17", "-Wall", "-Wextra")
             }
         }
@@ -168,9 +171,15 @@ val fetchOrcaMobileEngine by tasks.registering(Exec::class) {
     commandLine("bash", rootProject.file("scripts/fetch-orca-mobile-engine.sh").absolutePath)
     inputs.property(
         "orcaMobileEngineSha256",
-        "25bd3b72ff698b43991005f0df65ac57f67766ed4b240c48b8f3ec943eafbbdd",
+        "fdcf1b82e91a3897e6ec860cedc6e0cb79ed49cfd037a9f5274126edd2560388",
     )
-    outputs.file(layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/.orca-mobile-engine.sha256"))
+    outputs.files(
+        layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/.orca-mobile-engine.sha256"),
+        layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libslic3r.so"),
+        layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libgmp.so"),
+        layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libgmpxx.so"),
+        layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libmpfr.so"),
+    )
 }
 
 val fetchOrcaSystemPresets by tasks.registering(Exec::class) {

@@ -3,7 +3,7 @@
 This directory contains the project-side material for the Russian and English
 Google Play listing. Play Console remains the source of truth for policy forms.
 
-Target release: `0.15.0-alpha.2` (`versionCode` 30).
+Target release: `0.16.0-alpha.1` (`versionCode` 31).
 
 ## Release gates
 
@@ -24,8 +24,11 @@ Target release: `0.15.0-alpha.2` (`versionCode` 30).
 - [x] Play App Signing enabled in Play Console.
 - [x] AGPL source repository is public at
       <https://github.com/AMVavilov/feresa-slicer> and linked from the app.
-- [x] Build the final upload-signed `app-release.aab`, validate it with
-      Bundletool, and record its SHA-256 and size in `verification.md`.
+- [x] Rebuild the ARM64 Orca engine from pinned source with NDK r28c and no
+      OCCT runtime dependency.
+- [x] Build the final upload-signed `app-release.aab` and APK, run
+      `scripts/verify-16kb-aab.sh`, and record their SHA-256 values and sizes in
+      `verification.md`.
 - [ ] Upload the final signed `app-release.aab`.
 - [ ] Upload the prepared localized text and graphics from `fastlane/metadata`.
 - [ ] Complete App content declarations using `app-content.md` and
@@ -47,9 +50,10 @@ Target release: `0.15.0-alpha.2` (`versionCode` 30).
 - Personal developer accounts created after November 13, 2023 normally need a
   closed test with at least 12 opted-in testers for 14 continuous days before
   production access.
-- The bundled Orca native libraries currently rely on Android's 16 KB
-  compatibility mode. Rebuild them with 16 KB ELF alignment before the Google
-  Play enforcement date of February 1, 2027.
+- Version code 31 uses a source-built ARM64 Orca engine and NDK r28c runtime.
+  Every packaged ELF and Play-generated APK must pass the 16 KiB release gate;
+  do not reuse the version code 30 native artifacts that relied on Android's
+  compatibility mode.
 
 Official references:
 

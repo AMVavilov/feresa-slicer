@@ -1,0 +1,3 @@
+• Improved compatibility with newer Android devices that use 16 KB memory pages.
+• Included the latest model preview, quick camera views, and gesture improvements.
+• Improved reliability of persisted print settings and filament selection.

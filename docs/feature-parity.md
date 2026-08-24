@@ -2,10 +2,10 @@
 
 Audit date: 2026-08-18. This document describes the current Android working tree, not a marketing
 roadmap. The desktop comparison target is OrcaSlicer commit
-`d5dbd96dd64b830076c81053ed5fda26d5a1771b`; the production Android slicing binary is the pinned,
-checksum-verified OrcaSlicer Mobile 0.4.6 engine at commit
-`6fc2e14b9a222301f4432cee26d7ab37d3be86d0` (`architecture.md:87-110`,
-`../scripts/fetch-orca-mobile-engine.sh:11-20`). Those are different baselines: a control can be
+`d5dbd96dd64b830076c81053ed5fda26d5a1771b`; the production Android slicing binary is the
+source-built, checksum-verified NDK r28c engine based on OrcaSlicer Mobile commit
+`6fc2e14b9a222301f4432cee26d7ab37d3be86d0`
+(`architecture.md#pinned-native-engine`). Those are different baselines: a control can be
 valid for the mobile native ABI while the surrounding desktop workflow is still absent.
 
 ## Status definitions

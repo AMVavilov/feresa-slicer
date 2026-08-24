@@ -18,8 +18,8 @@ published as GitHub Release assets instead of being committed to the source repo
 ## Current technical preview
 
 - Kotlin and Jetpack Compose Android application.
-- Real OrcaSlicer / `libslic3r` slicing on ARM64 through the JNI ABI from
-  OrcaSlicer Mobile 0.4.6, pinned to source commit
+- Real OrcaSlicer / `libslic3r` slicing through a source-built ARM64 JNI
+  engine based on OrcaSlicer Mobile commit
   `6fc2e14b9a222301f4432cee26d7ab37d3be86d0`.
 - Local STL, OBJ, and 3MF geometry import plus G-code export. OBJ and 3MF are converted offline to
   the validated binary-STL interchange used by the current mobile Orca engine.
@@ -92,8 +92,8 @@ physical printer.
 Requirements:
 
 - JDK 17
-- Android SDK 35
-- Android NDK 27.1.12297006 or compatible
+- Android SDK 36
+- Android NDK 28.2.13676358 (r28c)
 - CMake 3.22.1
 - `curl`, `shasum`, and `unzip` for the pinned native-engine fetch
 - Node.js 20+ only when rebuilding the bundled viewer
@@ -105,16 +105,33 @@ npm run build:viewer
 ```
 
 Android `preBuild` runs `scripts/fetch-orca-mobile-engine.sh`. The script
-downloads OrcaSlicer Mobile 0.4.6 only when the local checksum marker is
-missing, verifies the release APK SHA-256
-`25bd3b72ff698b43991005f0df65ac57f67766ed4b240c48b8f3ec943eafbbdd`,
-and installs its ARM64 native dependency set under the ignored
-`app/src/main/jniLibs/arm64-v8a` directory. The extracted `libslic3r.so` has
-SHA-256
-`d3462d2f6ba7612b4d3bd85a4608b1dba5b3b2a52c35f49905c2c4e25defcbcf`.
-Feresa supplies the compatible NDK 27 `libc++_shared.so`; the remaining native
-libraries are the unmodified files from the checksummed release APK. A clean
-build therefore needs network access to that pinned GitHub release.
+downloads the immutable Feresa native-engine archive only when the local
+checksum marker is missing, verifies the archive and shared-library SHA-256
+values recorded in the script, and installs `libslic3r.so`, `libgmp.so`,
+`libgmpxx.so`, and `libmpfr.so` under the ignored
+`app/src/main/jniLibs/arm64-v8a` directory. Gradle/CMake supplies r28c's
+`libc++_shared.so` for both native modules.
+
+The engine is rebuilt from pinned OrcaSlicer Mobile commit
+`6fc2e14b9a222301f4432cee26d7ab37d3be86d0` with NDK r28c and 16 KiB ELF page
+alignment. The Android build excludes the OCCT-backed STEP import and
+SVG/TextShape object-construction paths; Feresa's supported model imports are
+STL, OBJ, and 3MF. OBJ and 3MF geometry is normalized to the validated STL
+interchange before native slicing. A clean build needs network access to the
+checksummed native-engine release archive.
+
+To rebuild that archive from corresponding source on macOS, install NDK r28c
+and run:
+
+```bash
+scripts/build-orca-mobile-engine-16kb.sh
+```
+
+The recipe pins every downloaded source and checksum, applies
+`scripts/patches/orca-mobile-6fc2e14-no-occt-ndk28.patch`, and writes the
+audited five-library archive plus checksum files below
+`.native-build-16k/dist/`. Set `FERESA_NATIVE_BUILD_ROOT` to use a different
+scratch directory; the application tree is not modified.
 
 To refresh the compact printer catalog from an OrcaSlicer checkout:
 

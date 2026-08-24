@@ -118,26 +118,29 @@ current file.
 
 ## Pinned native engine
 
-Feresa uses the unmodified ARM64 slicing artifacts from OrcaSlicer Mobile 0.4.6:
+Feresa uses a source-built ARM64 slicing engine based on OrcaSlicer Mobile
+commit `6fc2e14b9a222301f4432cee26d7ab37d3be86d0`. The engine is linked with
+Android NDK 28.2.13676358 (r28c) for 16 KiB page-size compatibility. Its
+immutable archive and per-library SHA-256 values are pinned in
+`scripts/fetch-orca-mobile-engine.sh`.
+The corresponding-source build is reproduced by
+`scripts/build-orca-mobile-engine-16kb.sh` together with the pinned patch in
+`scripts/patches/`.
 
-- source commit:
-  `6fc2e14b9a222301f4432cee26d7ab37d3be86d0`;
-- release APK SHA-256:
-  `25bd3b72ff698b43991005f0df65ac57f67766ed4b240c48b8f3ec943eafbbdd`;
-- extracted `libslic3r.so` SHA-256:
-  `d3462d2f6ba7612b4d3bd85a4608b1dba5b3b2a52c35f49905c2c4e25defcbcf`.
-
-Gradle `preBuild` invokes `scripts/fetch-orca-mobile-engine.sh`, verifies the
-release APK, and extracts 54 ARM64 shared libraries other than the release's
-old `libc++_shared.so`. Feresa packages NDK 27's compatible C++ runtime. The
-Java compatibility layer deliberately retains the upstream
+Gradle `preBuild` invokes that script and installs the verified
+`libslic3r.so`, GMP, GMP C++ and MPFR libraries. Feresa's own CMake build
+packages r28c's `libc++_shared.so`. The no-OCCT build excludes the
+OCCT-backed STEP import and SVG/TextShape object-construction paths, so the
+runtime closure contains no `libTK*.so`; the supported application import
+formats remain STL, OBJ, and 3MF. The Java compatibility layer deliberately
+retains the upstream
 `ru.ytkab0bp.slicebeam.slic3r` package and JNI descriptors, including a
 headless zero-pointer `GLShadersManager` shim required by `JNI_OnLoad`.
 
 Native `model_slice` loads the complete INI with forward-compatibility
 substitution disabled, normalizes FFF vector settings, validates the config and
 print, and writes G-code to the supplied app-private path. Slices are serialized
-because the diagnostic SVG path is process-global. The release ABI reports
+because the diagnostic SVG path is process-global. The pinned ABI reports
 progress but does not expose cancellation; portable layer/time/statistic
 summaries are derived from the generated G-code.
 

@@ -11,6 +11,7 @@ local.properties
 .DS_Store
 .cxx/
 captures/
+.native-build-16k/
 external/orcaslicer/
 external/orcaslicer-mobile-port/
 external/u1-orca-android-port/

@@ -1,0 +1,365 @@
+--- a/app/CMakeLists.txt
++++ b/app/CMakeLists.txt
+@@ -11,6 +11,8 @@
+ project(SliceBeam)
+ cmake_minimum_required(VERSION 3.4.1)
+
++option(FERESA_DISABLE_OCCT "Build the mobile engine without STEP/SVG CAD import support" OFF)
++
+ set(CMAKE_CXX_STANDARD 17)
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+@@ -53,17 +55,20 @@
+             ${jni_imports}/boost/lib/${ANDROID_ABI}/lib/libboost_${NAME}-clang-mt-${BOOST_ARCH}-${BOOST_VERSION}.a)
+ endforeach()
+
+-# OCCT
+-set(OCCT_JNI_LIBS ${CMAKE_SOURCE_DIR}/src/main/occt/jniLibs)
+-set(OCCT_LIBS TKDESTEP TKXCAF TKCAF TKLCAF TKCDF TKV3d TKMesh TKXMesh TKBO TKPrim TKHLR TKShHealing TKTopAlgo TKGeomAlgo TKGeomBase TKBRep TKG3d TKG2d TKMath TKernel)
++if (NOT FERESA_DISABLE_OCCT)
++    # OCCT is only required by STEP/SVG CAD import. The Android application
++    # exposes STL, OBJ and 3MF, so release builds may omit this large runtime.
++    set(OCCT_JNI_LIBS ${CMAKE_SOURCE_DIR}/src/main/occt/jniLibs)
++    set(OCCT_LIBS TKDESTEP TKXCAF TKCAF TKLCAF TKCDF TKV3d TKMesh TKXMesh TKBO TKPrim TKHLR TKShHealing TKTopAlgo TKGeomAlgo TKGeomBase TKBRep TKG3d TKG2d TKMath TKernel)
+
+-foreach (NAME IN LISTS OCCT_LIBS)
+-    add_library(occt_${NAME} SHARED IMPORTED)
+-    set_target_properties(occt_${NAME} PROPERTIES IMPORTED_LOCATION
+-            ${OCCT_JNI_LIBS}/${ANDROID_ABI}/lib${NAME}.so)
+-endforeach()
++    foreach (NAME IN LISTS OCCT_LIBS)
++        add_library(occt_${NAME} SHARED IMPORTED)
++        set_target_properties(occt_${NAME} PROPERTIES IMPORTED_LOCATION
++                ${OCCT_JNI_LIBS}/${ANDROID_ABI}/lib${NAME}.so)
++    endforeach()
+
+-list(TRANSFORM OCCT_LIBS PREPEND "occt_")
++    list(TRANSFORM OCCT_LIBS PREPEND "occt_")
++endif()
+
+
+ add_library(tbb STATIC IMPORTED)
+@@ -88,7 +93,9 @@
+
+ include_directories(src/main/jni/eigen)
+ include_directories(src/main/jni/libigl)
+-include_directories(src/main/occt/include/${ANDROID_ABI})
++if (NOT FERESA_DISABLE_OCCT)
++    include_directories(src/main/occt/include/${ANDROID_ABI})
++endif()
+
+ # Expat config
+ set(EXPAT_CONTEXT_BYTES 1024)
+@@ -232,6 +239,7 @@
+         src/main/jni/zlib/uncompr.c
+         src/main/jni/zlib/zutil.c
+ )
++target_compile_definitions(zlib PRIVATE HAVE_UNISTD_H=1)
+
+ add_library(libpng
+         STATIC
+@@ -261,12 +269,14 @@
+         src/main/jni/heatshrink/heatshrink_decoder.c
+ )
+
+-add_library(OCCTWrapper
+-        STATIC
+-        src/main/jni/occt_wrapper/OCCTWrapper.cpp)
+-target_include_directories(OCCTWrapper PRIVATE src/main/occt/include/${ANDROID_ABI})
+-generate_export_header(OCCTWrapper
+-        EXPORT_FILE_NAME ${CMAKE_CURRENT_SOURCE_DIR}/src/main/jni/occt_wrapper/occtwrapper_export.h)
++if (NOT FERESA_DISABLE_OCCT)
++    add_library(OCCTWrapper
++            STATIC
++            src/main/jni/occt_wrapper/OCCTWrapper.cpp)
++    target_include_directories(OCCTWrapper PRIVATE src/main/occt/include/${ANDROID_ABI})
++    generate_export_header(OCCTWrapper
++            EXPORT_FILE_NAME ${CMAKE_CURRENT_SOURCE_DIR}/src/main/jni/occt_wrapper/occtwrapper_export.h)
++endif()
+
+ add_library(BGCode_core
+         STATIC
+@@ -464,6 +474,15 @@
+ set(MCUT_BUILD_TUTORIALS OFF)
+ add_subdirectory(src/main/jni/mcut)
+
++if (FERESA_DISABLE_OCCT)
++    set(FERESA_OCCT_FORMAT_SOURCES
++            src/main/jni/libslic3r/Format/occt_disabled.cpp)
++else()
++    set(FERESA_OCCT_FORMAT_SOURCES
++            src/main/jni/libslic3r/Format/STEP.cpp
++            src/main/jni/libslic3r/Format/svg.cpp)
++endif()
++
+ add_library(slic3r
+         SHARED
+         src/main/jni/semver/semver.c
+@@ -885,7 +904,7 @@
+         src/main/jni/libslic3r/Format/AMF.hpp
+         src/main/jni/libslic3r/Format/bbs_3mf.cpp
+         src/main/jni/libslic3r/Format/bbs_3mf.hpp
+-        src/main/jni/libslic3r/Format/STEP.cpp
++        ${FERESA_OCCT_FORMAT_SOURCES}
+         src/main/jni/libslic3r/Format/STEP.hpp
+         src/main/jni/libslic3r/format.hpp
+         src/main/jni/libslic3r/Format/OBJ.cpp
+@@ -896,7 +915,6 @@
+         src/main/jni/libslic3r/Format/SL1.hpp
+         src/main/jni/libslic3r/Format/STL.cpp
+         src/main/jni/libslic3r/Format/STL.hpp
+-        src/main/jni/libslic3r/Format/svg.cpp
+         src/main/jni/libslic3r/Format/svg.hpp
+         src/main/jni/libslic3r/Format/ZipperArchiveImport.cpp
+         src/main/jni/libslic3r/Format/ZipperArchiveImport.hpp
+@@ -1187,6 +1205,9 @@
+ target_compile_definitions(slic3r PUBLIC -DUSE_TBB -DTBB_USE_CAPTURED_EXCEPTION=0 -DLIBNEST2D_GEOMETRIES_libslic3r
+         -DLIBNEST2D_OPTIMIZER_nlopt -DLIBNEST2D_THREADING_tbb -DLIBNEST2D_STATIC -DENABLE_OPENGL_ES -DSLIC3R_OPENGL_ES
+         -DUSE_CPP11_REGEX)
++if (FERESA_DISABLE_OCCT)
++    target_compile_definitions(slic3r PRIVATE FERESA_DISABLE_OCCT)
++endif()
+
+ target_include_directories(slic3r PRIVATE
+         src/main/jni
+@@ -1249,7 +1270,6 @@
+         tbbmalloc
+         heatshrink
+         jpeg-static
+-        OCCTWrapper
+         mcut
+         BGCode_core
+         BGCode_binarize
+@@ -1289,5 +1309,8 @@
+         boost_url
+         boost_wave
+         boost_wserialization
+-        ${OCCT_LIBS}
+-)
+\ No newline at end of file
++)
++
++if (NOT FERESA_DISABLE_OCCT)
++    target_link_libraries(slic3r PRIVATE OCCTWrapper ${OCCT_LIBS})
++endif()
+--- a/app/src/main/jni/libslic3r/Format/STEP.hpp
++++ b/app/src/main/jni/libslic3r/Format/STEP.hpp
+@@ -1,18 +1,23 @@
+ #ifndef slic3r_Format_STEP_hpp_
+ #define slic3r_Format_STEP_hpp_
++#include <atomic>
++#include <functional>
++#include <string>
++#ifndef FERESA_DISABLE_OCCT
+ #include "XCAFDoc_DocumentTool.hxx"
+ #include "XCAFApp_Application.hxx"
+ #include "XCAFDoc_ShapeTool.hxx"
++#include <Message_ProgressIndicator.hxx>
++#endif
+ #include <boost/filesystem/path.hpp>
+ #include <boost/filesystem.hpp>
+-#include <Message_ProgressIndicator.hxx>
+-#include <atomic>
+
+ namespace fs = boost::filesystem;
+
+ namespace Slic3r {
+
+ class TriangleMesh;
++class Model;
+ class ModelObject;
+
+ // load step stage
+@@ -25,6 +30,7 @@
+ typedef std::function<void(int load_stage, int current, int total, bool& cancel)> ImportStepProgressFn;
+ typedef std::function<void(bool isUtf8)> StepIsUtf8Fn;
+
++#ifndef FERESA_DISABLE_OCCT
+ struct NamedSolid
+ {
+     NamedSolid(const TopoDS_Shape& s,
+@@ -34,6 +40,7 @@
+     const std::string  name;
+     int tri_face_cout = 0;
+ };
++#endif
+
+ //BBS: Load an step file into a provided model.
+ extern bool load_step(const char *path, Model *model,
+@@ -70,6 +77,7 @@
+     EncodedType m_encode_type = EncodedType::UTF8;
+ };
+
++#ifndef FERESA_DISABLE_OCCT
+ class StepProgressIncdicator : public Message_ProgressIndicator
+ {
+ public:
+@@ -118,6 +126,38 @@
+     Handle(XCAFDoc_ShapeTool) m_shape_tool;
+     std::vector<NamedSolid> m_name_solids;
+ };
++#else
++class Step
++{
++public:
++    enum class Step_Status {
++        LOAD_SUCCESS,
++        LOAD_ERROR,
++        CANCEL,
++        MESH_SUCCESS,
++        MESH_ERROR
++    };
++    Step(fs::path path, ImportStepProgressFn stepFn = nullptr, StepIsUtf8Fn isUtf8Fn = nullptr);
++    Step(std::string path, ImportStepProgressFn stepFn = nullptr, StepIsUtf8Fn isUtf8Fn = nullptr);
++    ~Step();
++    Step_Status load();
++    unsigned int get_triangle_num(double linear_defletion, double angle_defletion);
++    unsigned int get_triangle_num_tbb(double linear_defletion, double angle_defletion);
++    void clean_mesh_data();
++    Step_Status mesh(Model* model,
++                     bool& is_cancel,
++                     bool isSplitCompound,
++                     double linear_defletion = 0.003,
++                     double angle_defletion = 0.5);
++
++    std::atomic<bool> m_stop_mesh{false};
++    void update_process(int load_stage, int current, int total, bool& cancel);
++private:
++    std::string m_path;
++    ImportStepProgressFn m_stepFn;
++    StepIsUtf8Fn m_utf8Fn;
++};
++#endif
+
+ }; // namespace Slic3r
+
+--- a/app/src/main/jni/clipper/clipper.hpp
++++ b/app/src/main/jni/clipper/clipper.hpp
+@@ -39,7 +39,7 @@
+
+ #include <Eigen/Geometry>
+
+-#include <oneapi/tbb/scalable_allocator.h>
++#include <tbb/scalable_allocator.h>
+
+ #define CLIPPER_VERSION "6.2.6"
+
+--- a/app/src/main/jni/libslic3r/JumpPointSearch.cpp
++++ b/app/src/main/jni/libslic3r/JumpPointSearch.cpp
+@@ -19,7 +19,7 @@
+ #include <unordered_map>
+ #include <vector>
+
+-#include <oneapi/tbb/scalable_allocator.h>
++#include <tbb/scalable_allocator.h>
+
+ //#define DEBUG_FILES
+ #ifdef DEBUG_FILES
+--- a/app/src/main/jni/libslic3r/PrintObject.cpp
++++ b/app/src/main/jni/libslic3r/PrintObject.cpp
+@@ -30,9 +30,9 @@
+ #include <iterator>
+ #include <mutex>
+ #include <string>
+-#include <oneapi/tbb/blocked_range.h>
+-#include <oneapi/tbb/concurrent_vector.h>
+-#include <oneapi/tbb/parallel_for.h>
++#include <tbb/blocked_range.h>
++#include <tbb/concurrent_vector.h>
++#include <tbb/parallel_for.h>
+ #include <string_view>
+ #include <utility>
+
+--- a/app/src/main/jni/libslic3r/Support/SupportLayer.hpp
++++ b/app/src/main/jni/libslic3r/Support/SupportLayer.hpp
+@@ -1,8 +1,8 @@
+ #ifndef slic3r_SupportLayer_hpp_
+ #define slic3r_SupportLayer_hpp_
+
+-#include <oneapi/tbb/scalable_allocator.h>
+-#include <oneapi/tbb/spin_mutex.h>
++#include <tbb/scalable_allocator.h>
++#include <tbb/spin_mutex.h>
+ // for Slic3r::deque
+ #include "../libslic3r.h"
+ #include "../ClipperUtils.hpp"
+--- a/app/src/main/jni/libslic3r/Point.hpp
++++ b/app/src/main/jni/libslic3r/Point.hpp
+@@ -9,7 +9,7 @@
+ #include <sstream>
+ #include <unordered_map>
+
+-#include <oneapi/tbb/scalable_allocator.h>
++#include <tbb/scalable_allocator.h>
+
+
+ #include <Eigen/Geometry>
+--- a/app/src/main/jni/nlopt/algs/stogo/tools.h
++++ b/app/src/main/jni/nlopt/algs/stogo/tools.h
+@@ -36,7 +36,7 @@
+   friend ostream & operator << (ostream &, RCTrial) ;
+ };
+
+-class TrialGT : public unary_function<Trial, bool>
++class TrialGT
+ // Predicate for Trial (needed for remove_if)
+ {
+ public:
+--- /dev/null
++++ b/app/src/main/jni/libslic3r/Format/occt_disabled.cpp
+@@ -0,0 +1,55 @@
++#include "STEP.hpp"
++#include "svg.hpp"
++
++#include <utility>
++
++namespace Slic3r {
++
++bool load_step(const char *, Model *, bool &, double, double, bool,
++               ImportStepProgressFn, StepIsUtf8Fn, long &)
++{
++    return false;
++}
++
++bool StepPreProcessor::preprocess(const char *path, std::string &output_path)
++{
++    output_path = path == nullptr ? std::string{} : std::string{path};
++    return true;
++}
++
++bool StepPreProcessor::isUtf8File(const char *) { return true; }
++bool StepPreProcessor::isUtf8(const std::string) { return true; }
++bool StepPreProcessor::isGBK(const std::string) { return false; }
++int StepPreProcessor::preNum(const unsigned char) { return 0; }
++
++Step::Step(fs::path path, ImportStepProgressFn stepFn, StepIsUtf8Fn isUtf8Fn)
++    : m_path(path.string()), m_stepFn(std::move(stepFn)), m_utf8Fn(std::move(isUtf8Fn))
++{}
++
++Step::Step(std::string path, ImportStepProgressFn stepFn, StepIsUtf8Fn isUtf8Fn)
++    : m_path(std::move(path)), m_stepFn(std::move(stepFn)), m_utf8Fn(std::move(isUtf8Fn))
++{}
++
++Step::~Step() = default;
++Step::Step_Status Step::load() { return Step_Status::LOAD_ERROR; }
++unsigned int Step::get_triangle_num(double, double) { return 0; }
++unsigned int Step::get_triangle_num_tbb(double, double) { return 0; }
++void Step::clean_mesh_data() {}
++Step::Step_Status Step::mesh(Model *, bool &, bool, double, double)
++{
++    return Step_Status::MESH_ERROR;
++}
++
++void Step::update_process(int load_stage, int current, int total, bool &cancel)
++{
++    if (m_stepFn)
++        m_stepFn(load_stage, current, total, cancel);
++}
++
++bool load_svg(const char *, Model *, std::string &message)
++{
++    message = "SVG import is unavailable in this mobile engine build.";
++    return false;
++}
++
++} // namespace Slic3r

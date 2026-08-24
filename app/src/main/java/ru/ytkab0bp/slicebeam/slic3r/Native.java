@@ -6,7 +6,7 @@ package ru.ytkab0bp.slicebeam.slic3r;
  * 6fc2e14b9a222301f4432cee26d7ab37d3be86d0.
  *
  * <p>The method names and descriptors below intentionally match the exported JNI symbols in
- * {@code beam_native.cpp}. Keep them stable when the native artifacts are introduced. The loader
+ * {@code beam_native.cpp}. Keep them stable when replacing the native-engine archive. The loader
  * is tolerant of absent artifacts so JVM tests and source-only builds remain usable.</p>
  */
 public final class Native {
@@ -15,27 +15,6 @@ public final class Native {
             "gmp",
             "gmpxx",
             "mpfr",
-            "TKDESTEP",
-            "TKXCAF",
-            "TKLCAF",
-            "TKCAF",
-            "TKCDF",
-            "TKV3d",
-            "TKMesh",
-            "TKXMesh",
-            "TKBO",
-            "TKPrim",
-            "TKHLR",
-            "TKShHealing",
-            "TKTopAlgo",
-            "TKGeomAlgo",
-            "TKGeomBase",
-            "TKBRep",
-            "TKG3d",
-            "TKG2d",
-            "TKMath",
-            "TKernel",
-            "TKDE",
             "slic3r",
     };
 

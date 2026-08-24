@@ -1,6 +1,6 @@
 # Third-party notices
 
-Last audited: 2026-08-21
+Last audited: 2026-08-24
 
 This file identifies software included in the Feresa Slicer Android
 application or needed to reproduce it. It is provided for attribution and
@@ -47,12 +47,21 @@ The optional proprietary Bambu networking plugin is not included.
 
 ### OrcaSlicer Mobile native engine
 
-The package includes unmodified ARM64 native artifacts from OrcaSlicer Mobile
-0.4.6, source revision `6fc2e14b9a222301f4432cee26d7ab37d3be86d0`.
-The downloaded APK SHA-256 is
-`25bd3b72ff698b43991005f0df65ac57f67766ed4b240c48b8f3ec943eafbbdd`;
-the extracted `libslic3r.so` SHA-256 is
-`d3462d2f6ba7612b4d3bd85a4608b1dba5b3b2a52c35f49905c2c4e25defcbcf`.
+The package includes an ARM64 native engine rebuilt from OrcaSlicer Mobile
+source revision `6fc2e14b9a222301f4432cee26d7ab37d3be86d0`. Feresa builds the
+engine and its dynamic GMP/MPFR dependencies with Android NDK r28c and 16 KiB
+ELF page alignment. The immutable archive and individual library SHA-256
+values used by the Android build are recorded in
+`scripts/fetch-orca-mobile-engine.sh` in the corresponding Feresa source.
+The pinned corresponding-source recipe is
+`scripts/build-orca-mobile-engine-16kb.sh`; its no-OCCT and NDK r28c source
+changes are recorded in
+`scripts/patches/orca-mobile-6fc2e14-no-occt-ndk28.patch`.
+
+Feresa's no-OCCT Android build excludes the OCCT-backed STEP import and
+SVG/TextShape object-construction paths. The application imports STL, OBJ, and
+3MF geometry; OBJ and 3MF are normalized to STL before native slicing. No
+Open CASCADE shared library or object code is packaged in the application.
 
 Copyright includes OrcaSlicer contributors, Prusa Research a.s. and its
 contributors, SoftFever, SliceBeam / OrcaSlicer Mobile contributors, and the
@@ -62,7 +71,8 @@ License for the combined Orca-derived engine: GNU AGPL version 3
 (`assets/legal/AGPL-3.0.txt`), subject also to every component license below.
 
 - Source: https://github.com/CodeMasterCody3D/OrcaSlicer-Mobile/tree/6fc2e14b9a222301f4432cee26d7ab37d3be86d0
-- Release: https://github.com/CodeMasterCody3D/OrcaSlicer-Mobile/releases/tag/0.4.6
+- Upstream release baseline: https://github.com/CodeMasterCody3D/OrcaSlicer-Mobile/releases/tag/0.4.6
+- Corresponding Feresa source and build integration: https://github.com/AMVavilov/feresa-slicer
 
 ## Android and Kotlin runtime
 
@@ -98,8 +108,8 @@ https://github.com/jspecify/jspecify, and https://github.com/google/guava.
 ## Native components
 
 These components are included in, statically linked into, or dynamically
-loaded by the pinned native engine. "Inferred" versions came from headers or
-binary strings because the upstream release has no machine-readable SBOM.
+loaded by the pinned native engine. Versions are taken from the pinned native
+build inputs or from version headers retained in the corresponding source.
 
 ### Copyleft components
 
@@ -123,10 +133,6 @@ binary strings because the upstream release has no machine-readable SBOM.
 - **libnest2d** — Copyright its contributors, including Tamás Mészáros. GNU
   LGPL version 3. Texts: `GPL-3.0.txt` and `LGPL-3.0.txt`.
   Source: https://github.com/tamasmeszaros/libnest2d
-- **Open CASCADE Technology (OCCT) 8.0.0 (inferred)** — Copyright Open CASCADE
-  SAS and contributors. GNU LGPL version 2.1 with Open CASCADE Exception 1.0.
-  Texts: `LGPL-2.1.txt` and `OCCT-LGPL-exception-1.0.txt`.
-  Source: https://github.com/Open-Cascade-SAS/OCCT
 - **GNU MP 6.2.1 (GMP and GMP C++ interface)** — Copyright the Free Software
   Foundation, Inc. and contributors. Distributed here under its GNU
   LGPL-3.0-or-later option. Texts: `GPL-3.0.txt` and `LGPL-3.0.txt`.
@@ -135,9 +141,10 @@ binary strings because the upstream release has no machine-readable SBOM.
   3 or later. Texts: `GPL-3.0.txt` and `LGPL-3.0.txt`.
   Source: https://www.mpfr.org/
 
-OCCT, GMP and MPFR are separate shared libraries. MCUT, libnest2d, CGAL and
-NLopt are incorporated into `libslic3r.so`. Corresponding source and material
-needed to rebuild/relink modified versions must remain available.
+GMP and MPFR are separate shared libraries. MCUT, libnest2d, CGAL and NLopt
+are incorporated into `libslic3r.so`. OCCT is not linked or packaged in the
+Android engine. Corresponding source and material needed to rebuild/relink
+modified versions must remain available.
 
 ### Mozilla Public License components
 
@@ -154,10 +161,12 @@ These use MPL 2.0 (`MPL-2.0.txt`):
 
 ### Apache, LLVM and Boost components
 
-- **oneTBB** — Copyright Intel Corporation and contributors. Apache 2.0:
-  `Apache-2.0.txt`. Exact revision is not recorded by the upstream build
-  script. Source: https://github.com/oneapi-src/oneTBB
-- **Android NDK libc++ shared runtime**, NDK 27.1.12297006 — Copyright LLVM
+- **Intel TBB 2019 (Android port)** — Copyright Intel Corporation and
+  contributors. Apache 2.0: `Apache-2.0.txt`. Feresa's source build pins
+  `syoyo/tbb-aarch64` commit
+  `c0bf89c041df6b794ddf5970854a6b730cb480b1` (TBB interface version 11002).
+  Source: https://github.com/syoyo/tbb-aarch64/tree/c0bf89c041df6b794ddf5970854a6b730cb480b1
+- **Android NDK libc++ shared runtime**, NDK 28.2.13676358 (r28c) — Copyright LLVM
   Project contributors. Apache 2.0 with LLVM Exceptions:
   `LLVM-Apache-2.0-with-exception.txt`.
   Source: https://github.com/llvm/llvm-project
@@ -245,3 +254,6 @@ The package includes `AGPL-3.0.txt` plus these files below `licenses/`:
 `heatshrink-ISC.txt`, `libjpeg-turbo.txt`, `libpng-1.6.35.txt`,
 `MCUT.txt`, `miniz.txt`, `NLOpt-2.5.0.txt`, `Qhull.txt`,
 `rapidxml.txt`, and `SGI-B-2.0.txt`.
+
+The OCCT exception text is retained as a source-history reference. The
+no-OCCT Android engine does not package or link OCCT code.

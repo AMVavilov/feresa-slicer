@@ -44,6 +44,10 @@ user confirmation and a fresh ready-state probe.
 
 ## 2026-08-18 pinned OrcaSlicer Mobile engine integration
 
+Historical record: this section describes the former upstream APK artifact
+set. It is superseded for version code 31 by the source-built NDK r28c,
+no-OCCT engine documented in `orca-mobile-native-abi.md`.
+
 Engine identity and packaging audit:
 
 - OrcaSlicer Mobile source is pinned to commit
