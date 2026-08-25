@@ -635,6 +635,8 @@ run_signed_apk_launch_smoke() {
     local pid_log="${report_dir}/${role}-signed-apk-pid-logcat.txt"
     local scan_log="${report_dir}/${role}-signed-apk-log-scan.txt"
     local package_log="${report_dir}/${role}-signed-apk-package.txt"
+    local launch_log="${report_dir}/${role}-signed-apk-launch.txt"
+    local launch_component=""
     local pid_before=""
     local pid_after=""
     local installed_version_name=""
@@ -664,8 +666,18 @@ run_signed_apk_launch_smoke() {
 
     "${adb_path}" -s "${serial}" logcat -c
     "${adb_path}" -s "${serial}" shell am force-stop "${APPLICATION_ID}"
-    "${adb_path}" -s "${serial}" shell monkey \
-        -p "${APPLICATION_ID}" -c android.intent.category.LAUNCHER 1
+    launch_component="$(
+        "${adb_path}" -s "${serial}" shell cmd package resolve-activity --brief \
+            -a android.intent.action.MAIN \
+            -c android.intent.category.LAUNCHER \
+            "${APPLICATION_ID}" | tr -d '\r' | tail -n 1
+    )" || die "Unable to resolve the launcher activity for ${role_label}."
+    [[ "${launch_component}" == "${APPLICATION_ID}/"* ]] || \
+        die "Resolved launcher activity is invalid for ${role_label}: ${launch_component:-missing}."
+    "${adb_path}" -s "${serial}" shell am start -W -n "${launch_component}" > "${launch_log}" || \
+        die "Unable to launch the exact signed APK on ${role_label}."
+    grep -Eq '^Status:[[:space:]]+ok$' "${launch_log}" || \
+        die "Android did not report a successful exact-APK launch on ${role_label}."
 
     pid_before="$(wait_for_application_pid "${adb_path}" "${serial}" || true)"
     if [[ "${pid_before}" =~ ^[0-9]+$ ]]; then
@@ -706,7 +718,7 @@ run_signed_apk_launch_smoke() {
     printf 'No FATAL/ANR/OOM/native fatal evidence found for PID %s.\n' \
         "${pid_before}" > "${scan_log}"
 
-    append_summary "PASS | Exact signed APK ${role_label} launch smoke | serial=${serial} | PID=${pid_before} | version=${installed_version_name} (${installed_version_code}) | ${role}-signed-apk-logcat.txt | ${role}-signed-apk-pid-logcat.txt | ${role}-signed-apk-log-scan.txt"
+    append_summary "PASS | Exact signed APK ${role_label} launch smoke | serial=${serial} | PID=${pid_before} | version=${installed_version_name} (${installed_version_code}) | ${role}-signed-apk-launch.txt | ${role}-signed-apk-logcat.txt | ${role}-signed-apk-pid-logcat.txt | ${role}-signed-apk-log-scan.txt"
     printf 'Exact signed APK launch smoke passed: role=%s serial=%s pid=%s SHA-256=%s\n' \
         "${role_label}" "${serial}" "${pid_before}" "${apk_sha256}"
     printf 'Smoke scope: install, cold start, PID survival, and log scan only; no automatic slicing claim.\n'
