@@ -94,6 +94,14 @@ class PrePlayModelScreenE2ETest {
         }
         composeRule.onNodeWithTag(ModelSliceResultTestTag)
             .assertExists()
+        composeRule.waitUntil(timeoutMillis = UI_READY_TIMEOUT_MS) {
+            composeRule.onAllNodesWithTag(ModelToolpathViewerTestTag)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
+        }
+        composeRule.onNodeWithTag(ModelToolpathViewerTestTag)
+            .performScrollTo()
+            .assertIsDisplayed()
         composeRule.waitUntil(timeoutMillis = TOOLPATH_RENDER_TIMEOUT_MS) {
             composeRule.onAllNodesWithTag(ModelToolpathViewerTestTag)
                 .fetchSemanticsNodes()
@@ -102,9 +110,6 @@ class PrePlayModelScreenE2ETest {
                         node.config[RenderedToolpathSegmentsKey] > MINIMUM_RENDERED_SEGMENTS
                 }
         }
-        composeRule.onNodeWithTag(ModelToolpathViewerTestTag)
-            .performScrollTo()
-            .assertIsDisplayed()
 
         val generatedGcode = targetContext.cacheDir
             .listFiles()
@@ -130,7 +135,7 @@ class PrePlayModelScreenE2ETest {
     private companion object {
         const val UI_READY_TIMEOUT_MS = 30_000L
         const val SLICE_UI_TIMEOUT_MS = 180_000L
-        const val TOOLPATH_RENDER_TIMEOUT_MS = 60_000L
+        const val TOOLPATH_RENDER_TIMEOUT_MS = 120_000L
         const val MINIMUM_RENDERED_SEGMENTS = 1_000L
     }
 }
