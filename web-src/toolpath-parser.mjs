@@ -102,6 +102,19 @@ function readWords(line) {
     return words;
 }
 
+function* gcodeLines(gcode) {
+    let start = 0;
+    while (start < gcode.length) {
+        const newline = gcode.indexOf("\n", start);
+        const end = newline >= 0 ? newline : gcode.length;
+        let line = gcode.slice(start, end);
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        yield line;
+        if (newline < 0) break;
+        start = newline + 1;
+    }
+}
+
 function directedArcSweep(startAngle, endAngle, clockwise) {
     let sweep = endAngle - startAngle;
     if (clockwise) {
@@ -175,6 +188,7 @@ function interpolateArc(startX, startY, endX, endY, words, clockwise) {
 
 export function parseToolpathDetailed(gcode, bedWidth, bedDepth) {
     const segments = [];
+    let lineNumber = 0;
     let x = 0;
     let y = 0;
     let z = 0;
@@ -192,7 +206,8 @@ export function parseToolpathDetailed(gcode, bedWidth, bedDepth) {
     let inferredLayerHeight = null;
     let previousExtrusionZ = null;
 
-    for (const rawLine of gcode.split(/\r?\n/)) {
+    for (const rawLine of gcodeLines(gcode)) {
+        lineNumber += 1;
         const commentStart = rawLine.indexOf(";");
         const comment = commentStart >= 0 ? rawLine.slice(commentStart + 1).trim() : "";
         const layerMatch = comment.match(/^LAYER\s*:\s*(\d+)/i);
@@ -306,6 +321,7 @@ export function parseToolpathDetailed(gcode, bedWidth, bedDepth) {
                     lineTypeLabel: isExtrusion ? lineTypeLabel : "Travel",
                     lineWidth: isExtrusion ? explicitLineWidth : null,
                     layerHeight: isExtrusion ? (explicitLayerHeight ?? inferredLayerHeight) : null,
+                    lineNumber,
                 });
                 segmentStartX = point.x;
                 segmentStartY = point.y;
@@ -322,7 +338,11 @@ export function parseToolpathDetailed(gcode, bedWidth, bedDepth) {
         extrusion = nextExtrusion;
     }
 
-    return { segments, layerCount: segments.length === 0 ? 0 : highestLayer + 1 };
+    return {
+        segments,
+        layerCount: segments.length === 0 ? 0 : highestLayer + 1,
+        lineCount: lineNumber,
+    };
 }
 
 export function selectVisibleToolpathSegments(segments, preview = {}) {
@@ -343,24 +363,56 @@ export function selectVisibleToolpathSegments(segments, preview = {}) {
     const maximumSegmentRatio = Number.isFinite(requestedRatio)
         ? Math.min(1, Math.max(0, requestedRatio))
         : 1;
+    if (maximumSegmentRatio >= 1) return filtered;
     const maximumIndex = Math.round((filtered.length - 1) * maximumSegmentRatio);
     return filtered.slice(0, maximumIndex + 1);
 }
 
-export function toolpathSelectionPayload(eligibleSegments, visibleSegments) {
+function toolpathLayerZRange(eligibleSegments) {
+    let minimum = Number.POSITIVE_INFINITY;
+    let maximum = Number.NEGATIVE_INFINITY;
+    let extrusionMinimum = Number.POSITIVE_INFINITY;
+    let extrusionMaximum = Number.NEGATIVE_INFINITY;
+    for (const segment of eligibleSegments) {
+        const value = Number(segment.z);
+        if (!Number.isFinite(value)) continue;
+        minimum = Math.min(minimum, value);
+        maximum = Math.max(maximum, value);
+        if (segment.extrusion) {
+            extrusionMinimum = Math.min(extrusionMinimum, value);
+            extrusionMaximum = Math.max(extrusionMaximum, value);
+        }
+    }
+    if (Number.isFinite(extrusionMinimum)) {
+        return { minimum: extrusionMinimum, maximum: extrusionMaximum };
+    }
+    return Number.isFinite(minimum)
+        ? { minimum, maximum }
+        : { minimum: null, maximum: null };
+}
+
+export function toolpathSelectionPayload(eligibleSegments, visibleSegments, metadata = {}) {
     const selected = visibleSegments.at(-1);
+    const zRange = toolpathLayerZRange(eligibleSegments);
+    const summary = {
+        displayedSegmentCount: visibleSegments.length,
+        eligibleSegmentCount: eligibleSegments.length,
+        lineCount: Number.isFinite(metadata.lineCount) ? metadata.lineCount : 0,
+        minimumLayerZ: zRange.minimum,
+        maximumLayerZ: zRange.maximum,
+        commands: Array.isArray(metadata.commands) ? metadata.commands : [],
+    };
     if (!selected) {
         return {
             selected: false,
-            displayedSegmentCount: 0,
-            eligibleSegmentCount: eligibleSegments.length,
+            ...summary,
         };
     }
     return {
         selected: true,
-        displayedSegmentCount: visibleSegments.length,
-        eligibleSegmentCount: eligibleSegments.length,
+        ...summary,
         layer: selected.layer,
+        lineNumber: selected.lineNumber ?? 0,
         x: selected.x,
         y: selected.y,
         z: selected.z,

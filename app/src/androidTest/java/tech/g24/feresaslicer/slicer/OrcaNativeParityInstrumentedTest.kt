@@ -205,9 +205,19 @@ class OrcaNativeParityInstrumentedTest {
             ),
         )
         val printable = snapshot.extrusionPoints.filterNot { it.feature == "unknown" }
-        assertTrue("Transformed model must retain its 30 mm X span", printable.any { it.x < 96.0 })
-        assertTrue("Transformed model must retain its 30 mm X span", printable.any { it.x > 124.0 })
         assertTrue("Transformed model must emit real printable extrusion", printable.isNotEmpty())
+        val minimumX = printable.minOf(GcodeExtrusionPoint::x)
+        val maximumX = printable.maxOf(GcodeExtrusionPoint::x)
+        val printedSpan = maximumX - minimumX
+        val printedCenter = (minimumX + maximumX) / 2.0
+        // Extrusion centerlines are intentionally inset from the 30 mm mesh boundary by roughly
+        // half a line width. Comparing the measured span is deterministic; requiring a particular
+        // endpoint on each edge was seam-position dependent and intermittently failed a full run.
+        assertTrue(
+            "Transformed 30 mm model produced only a $printedSpan mm X span ($minimumX..$maximumX)",
+            printedSpan >= 29.0,
+        )
+        assertEquals("Transformed model must remain centered on X=110", 110.0, printedCenter, 0.5)
     }
 
     private fun sliceBox(runName: String, state: PrintSettingsState): GcodeSnapshot =

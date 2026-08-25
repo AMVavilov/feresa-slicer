@@ -111,9 +111,14 @@ data class ViewerSceneState(
 )
 
 data class ViewerToolpathSelection(
+    val selected: Boolean,
     val displayedSegmentCount: Int,
     val eligibleSegmentCount: Int,
+    val lineCount: Int,
+    val minimumLayerZ: Double?,
+    val maximumLayerZ: Double?,
     val layer: Int,
+    val lineNumber: Int,
     val x: Double,
     val y: Double,
     val z: Double,
@@ -123,11 +128,18 @@ data class ViewerToolpathSelection(
     val lineTypeLabel: String,
     val lineWidthMm: Double?,
     val layerHeightMm: Double?,
+    val commands: List<ViewerGcodeCommand>,
+)
+
+data class ViewerGcodeCommand(
+    val lineNumber: Int,
+    val source: String,
+    val active: Boolean,
 )
 
 internal fun parseViewerToolpathSelection(payload: String): ViewerToolpathSelection? {
     val json = JSONObject(payload)
-    if (!json.optBoolean("selected", false)) return null
+    val selected = json.optBoolean("selected", false)
 
     fun optionalFiniteDouble(name: String): Double? = if (json.isNull(name)) {
         null
@@ -135,19 +147,41 @@ internal fun parseViewerToolpathSelection(payload: String): ViewerToolpathSelect
         json.optDouble(name, Double.NaN).takeIf { it.isFinite() }
     }
 
+    val commandsJson = json.optJSONArray("commands")
+    val commands = buildList {
+        if (commandsJson != null) {
+            for (index in 0 until commandsJson.length()) {
+                val command = commandsJson.optJSONObject(index) ?: continue
+                add(
+                    ViewerGcodeCommand(
+                        lineNumber = command.optInt("lineNumber", 0),
+                        source = command.optString("source", ""),
+                        active = command.optBoolean("active", false),
+                    ),
+                )
+            }
+        }
+    }
+
     return ViewerToolpathSelection(
-        displayedSegmentCount = json.getInt("displayedSegmentCount"),
-        eligibleSegmentCount = json.getInt("eligibleSegmentCount"),
-        layer = json.getInt("layer"),
-        x = json.getDouble("x"),
-        y = json.getDouble("y"),
-        z = json.getDouble("z"),
-        speedMmSeconds = json.getDouble("speed"),
-        extrusion = json.getBoolean("extrusion"),
-        lineType = json.getString("lineType"),
-        lineTypeLabel = json.getString("lineTypeLabel"),
+        selected = selected,
+        displayedSegmentCount = json.optInt("displayedSegmentCount", 0),
+        eligibleSegmentCount = json.optInt("eligibleSegmentCount", 0),
+        lineCount = json.optInt("lineCount", 0),
+        minimumLayerZ = optionalFiniteDouble("minimumLayerZ"),
+        maximumLayerZ = optionalFiniteDouble("maximumLayerZ"),
+        layer = json.optInt("layer", 0),
+        lineNumber = json.optInt("lineNumber", 0),
+        x = json.optDouble("x", 0.0),
+        y = json.optDouble("y", 0.0),
+        z = json.optDouble("z", 0.0),
+        speedMmSeconds = json.optDouble("speed", 0.0),
+        extrusion = json.optBoolean("extrusion", false),
+        lineType = json.optString("lineType", ""),
+        lineTypeLabel = json.optString("lineTypeLabel", ""),
         lineWidthMm = optionalFiniteDouble("lineWidth"),
         layerHeightMm = optionalFiniteDouble("layerHeight"),
+        commands = commands,
     )
 }
 
@@ -173,6 +207,107 @@ enum class CameraViewPreset(val wireValue: String) {
 data class CameraViewRequest(
     val requestId: Int,
     val preset: CameraViewPreset,
+)
+
+enum class ViewerCameraMode(val wireValue: String) {
+    FREE("free"),
+    PRESET("preset"),
+}
+
+data class ViewerCameraVector(
+    val x: Double,
+    val y: Double,
+    val z: Double,
+)
+
+/**
+ * Serializable camera snapshot shared with the embedded viewer. Keeping the
+ * orbit target is essential: position alone cannot faithfully restore an
+ * OrbitControls camera after its WebView has been recreated.
+ */
+data class ViewerCameraState(
+    val position: ViewerCameraVector,
+    val target: ViewerCameraVector,
+    val up: ViewerCameraVector,
+    val fieldOfViewDegrees: Double = 38.0,
+    val mode: ViewerCameraMode = ViewerCameraMode.FREE,
+    val preset: CameraViewPreset? = null,
+    val source: String = "api",
+    val interactionActive: Boolean = false,
+)
+
+internal fun ViewerCameraState.toViewerJson(): JSONObject = JSONObject()
+    .put("version", 1)
+    .put("position", JSONArray(listOf(position.x, position.y, position.z)))
+    .put("target", JSONArray(listOf(target.x, target.y, target.z)))
+    .put("up", JSONArray(listOf(up.x, up.y, up.z)))
+    .put("fieldOfViewDegrees", fieldOfViewDegrees)
+    .put("mode", mode.wireValue)
+    .put("preset", preset?.wireValue ?: JSONObject.NULL)
+    .put("source", source)
+    .put("interactionActive", interactionActive)
+
+private fun JSONObject.viewerCameraVector(name: String): ViewerCameraVector {
+    val values = getJSONArray(name)
+    require(values.length() == 3) { "$name must contain three coordinates" }
+    return ViewerCameraVector(
+        x = values.getDouble(0),
+        y = values.getDouble(1),
+        z = values.getDouble(2),
+    ).also { vector ->
+        require(listOf(vector.x, vector.y, vector.z).all(Double::isFinite)) {
+            "$name coordinates must be finite"
+        }
+    }
+}
+
+internal fun parseViewerCameraState(payload: String): ViewerCameraState {
+    val json = JSONObject(payload)
+    val modeValue = json.optString("mode", ViewerCameraMode.FREE.wireValue)
+    val mode = ViewerCameraMode.entries.firstOrNull { it.wireValue == modeValue }
+        ?: error("Unsupported viewer camera mode: $modeValue")
+    val presetValue = json.optString("preset").takeUnless {
+        json.isNull("preset") || it.isBlank()
+    }
+    val preset = presetValue?.let { wireValue ->
+        CameraViewPreset.entries.firstOrNull { it.wireValue == wireValue }
+            ?: error("Unsupported viewer camera preset: $wireValue")
+    }
+    require(mode != ViewerCameraMode.PRESET || preset != null) {
+        "Preset camera mode requires a preset"
+    }
+    return ViewerCameraState(
+        position = json.viewerCameraVector("position"),
+        target = json.viewerCameraVector("target"),
+        up = json.viewerCameraVector("up"),
+        fieldOfViewDegrees = json.optDouble("fieldOfViewDegrees", 38.0).also { value ->
+            require(value.isFinite() && value in 1.0..179.0) {
+                "Camera field of view must be between 1 and 179 degrees"
+            }
+        },
+        mode = mode,
+        preset = preset,
+        source = json.optString("source", "api"),
+        interactionActive = json.optBoolean("interactionActive", false),
+    )
+}
+
+enum class CameraFramingTarget(val wireValue: String) {
+    MODELS("models"),
+    SELECTED_MODEL("selectedModel"),
+    PRINT_BED("printBed"),
+}
+
+/** Repeated camera commands remain observable through their requestId. */
+data class CameraFramingRequest(
+    val requestId: Int,
+    val target: CameraFramingTarget,
+)
+
+/** Restores a camera snapshot without recreating or reloading the WebView. */
+data class CameraRestoreRequest(
+    val requestId: Int,
+    val state: ViewerCameraState,
 )
 
 enum class ToolpathColorMode(val wireValue: String, val label: String) {
@@ -238,6 +373,8 @@ private class ViewerJavascriptBridge(
     private val onSceneStateCallback: (ViewerSceneState) -> Unit,
     private val onObjectSelectedCallback: (ViewerObjectSelection) -> Unit,
     private val onToolpathSelectionCallback: (ViewerToolpathSelection?) -> Unit,
+    private val onToolpathRenderedCallback: (Int) -> Unit,
+    private val onCameraStateCallback: (ViewerCameraState) -> Unit,
     private val onErrorCallback: (String) -> Unit,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -291,6 +428,22 @@ private class ViewerJavascriptBridge(
     }
 
     @JavascriptInterface
+    fun onToolpathRendered(segmentCount: Int) {
+        mainHandler.post { onToolpathRenderedCallback(segmentCount) }
+    }
+
+    @JavascriptInterface
+    fun onCameraState(payload: String) {
+        runCatching { parseViewerCameraState(payload) }
+            .onSuccess { state ->
+                mainHandler.post { onCameraStateCallback(state) }
+            }
+            .onFailure { error ->
+                mainHandler.post { onErrorCallback(error.message ?: "Invalid camera state") }
+            }
+    }
+
+    @JavascriptInterface
     fun onError(message: String) {
         mainHandler.post { onErrorCallback(message) }
     }
@@ -312,10 +465,16 @@ fun ModelViewer(
     toolpathProgress: Float = 1f,
     showExtrusion: Boolean = true,
     showTravel: Boolean = false,
+    includeToolpathCommands: Boolean = false,
     cameraResetRequest: Int = 0,
     cameraViewRequest: CameraViewRequest? = null,
+    cameraFramingRequest: CameraFramingRequest? = null,
+    cameraRestoreRequest: CameraRestoreRequest? = null,
+    initialCameraState: ViewerCameraState? = null,
     onSceneState: (ViewerSceneState) -> Unit,
     onToolpathSelection: (ViewerToolpathSelection?) -> Unit = {},
+    onToolpathRendered: (Int) -> Unit = {},
+    onCameraStateChange: (ViewerCameraState) -> Unit = {},
     onError: (String) -> Unit,
     viewerHeight: Dp? = 330.dp,
     showStatus: Boolean = true,
@@ -340,6 +499,8 @@ fun ModelViewer(
     val currentOnSceneState by rememberUpdatedState(onSceneState)
     val currentOnObjectSelected by rememberUpdatedState(onObjectSelected)
     val currentOnToolpathSelection by rememberUpdatedState(onToolpathSelection)
+    val currentOnToolpathRendered by rememberUpdatedState(onToolpathRendered)
+    val currentOnCameraStateChange by rememberUpdatedState(onCameraStateChange)
     val currentOnError by rememberUpdatedState(onError)
     val bridge = remember(rendererGeneration) {
         ViewerJavascriptBridge(
@@ -349,6 +510,8 @@ fun ModelViewer(
             onSceneStateCallback = { currentOnSceneState(it) },
             onObjectSelectedCallback = { currentOnObjectSelected(it) },
             onToolpathSelectionCallback = { currentOnToolpathSelection(it) },
+            onToolpathRenderedCallback = { currentOnToolpathRendered(it) },
+            onCameraStateCallback = { currentOnCameraStateChange(it) },
             onErrorCallback = { currentOnError(it) },
         )
     }
@@ -429,6 +592,9 @@ fun ModelViewer(
     }
     val modelObjectTransformsKey = modelObjects.map { model -> model.objectId to model.transform }
     val legacyModelFile = viewerLegacyModelFile(modelFile, modelObjects)
+    // Intentionally not part of the load effect key. Camera callbacks may update
+    // this value continuously and must never cause STL resources to reload.
+    val initialCameraJson = initialCameraState?.toViewerJson()?.toString() ?: "null"
 
     LaunchedEffect(viewerReady, legacyModelFile, modelObjectFilesKey) {
         resources.modelFile.set(legacyModelFile)
@@ -462,12 +628,12 @@ fun ModelViewer(
                 .put("selectedObjectId", selectedObjectId ?: JSONObject.NULL)
                 .put("frameAll", true)
             webView?.evaluateJavascript(
-                "window.FeresaSlicerViewer.loadModels($payload)",
+                "window.FeresaSlicerViewer.loadModels($payload,$initialCameraJson)",
                 null,
             )
         } else if (legacyModelFile != null) {
             webView?.evaluateJavascript(
-                "window.FeresaSlicerViewer.loadModel(${System.nanoTime()})",
+                "window.FeresaSlicerViewer.loadModel(${System.nanoTime()},$initialCameraJson)",
                 null,
             )
         } else {
@@ -477,7 +643,7 @@ fun ModelViewer(
                 .put("selectedObjectId", JSONObject.NULL)
                 .put("frameAll", true)
             webView?.evaluateJavascript(
-                "window.FeresaSlicerViewer.loadModels($payload)",
+                "window.FeresaSlicerViewer.loadModels($payload,$initialCameraJson)",
                 null,
             )
         }
@@ -550,6 +716,7 @@ fun ModelViewer(
         toolpathProgress,
         showExtrusion,
         showTravel,
+        includeToolpathCommands,
     ) {
         if (viewerReady) {
             val payload = JSONObject()
@@ -559,6 +726,7 @@ fun ModelViewer(
                 .put("maximumSegmentRatio", toolpathProgress.coerceIn(0f, 1f))
                 .put("showExtrusion", showExtrusion)
                 .put("showTravel", showTravel)
+                .put("includeCommands", includeToolpathCommands)
             webView?.evaluateJavascript(
                 "window.FeresaSlicerViewer.setToolpathPreview($payload)",
                 null,
@@ -580,6 +748,30 @@ fun ModelViewer(
             val preset = JSONObject.quote(cameraViewRequest.preset.wireValue)
             webView?.evaluateJavascript(
                 "window.FeresaSlicerViewer.setCameraView($preset)",
+                null,
+            )
+        }
+    }
+
+    LaunchedEffect(viewerReady, cameraFramingRequest) {
+        if (viewerReady && cameraFramingRequest != null) {
+            val functionName = when (cameraFramingRequest.target) {
+                CameraFramingTarget.MODELS -> "fitModels"
+                CameraFramingTarget.SELECTED_MODEL -> "fitSelectedModel"
+                CameraFramingTarget.PRINT_BED -> "showWholeBed"
+            }
+            webView?.evaluateJavascript(
+                "window.FeresaSlicerViewer.$functionName()",
+                null,
+            )
+        }
+    }
+
+    LaunchedEffect(viewerReady, cameraRestoreRequest) {
+        if (viewerReady && cameraRestoreRequest != null) {
+            val payload = cameraRestoreRequest.state.toViewerJson()
+            webView?.evaluateJavascript(
+                "window.FeresaSlicerViewer.restoreCameraState($payload)",
                 null,
             )
         }

@@ -32,14 +32,18 @@ android {
     namespace = "tech.g24.feresaslicer"
     compileSdk = 36
     ndkVersion = "28.2.13676358"
+    // The Play release gate switches this to `release` so instrumentation exercises the exact
+    // R8/minified JNI surface shipped to users. Normal local Android tests remain on debug.
+    testBuildType = providers.gradleProperty("feresa.testBuildType").getOrElse("debug")
 
     defaultConfig {
         applicationId = "tech.g24.feresaslicer"
         minSdk = 28
         targetSdk = 36
-        versionCode = 31
-        versionName = "0.16.0-alpha.1"
+        versionCode = 32
+        versionName = "0.16.0-alpha.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunnerArguments["clearPackageData"] = "true"
 
         // Public OrcaCloud client configuration from OrcaSlicer's AGPL source.
         // This is a publishable identifier, not a service secret.
@@ -99,6 +103,15 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            testProguardFiles("proguard-android-test-rules.pro")
+        }
+        create("releaseTest") {
+            initWith(getByName("release"))
+            // The production release remains untouched. This minified target retains only the
+            // runtime pieces needed to bootstrap AndroidX instrumentation against R8 output.
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+            proguardFile("proguard-release-test-target-rules.pro")
         }
     }
 
@@ -121,6 +134,13 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    // Native Orca owns process-wide caches and WebView owns a renderer process. Run every device
+    // test in a fresh application process so failures and memory measurements never depend on
+    // reflection order or on a previous test's legitimate warm caches.
+    testOptions {
+        execution = "ANDROIDX_TEST_ORCHESTRATOR"
     }
 
     packaging {
@@ -160,9 +180,12 @@ dependencies {
     // Android's org.json implementation is provided by the platform in production. Use the
     // matching JVM implementation so the process-settings wire contract can be tested locally.
     testImplementation("org.json:json:20240303")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     androidTestImplementation("androidx.test:core-ktx:1.6.1")
     androidTestImplementation("androidx.test.ext:junit-ktx:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestUtil("androidx.test:orchestrator:1.5.1")
 }
 
 val fetchOrcaMobileEngine by tasks.registering(Exec::class) {

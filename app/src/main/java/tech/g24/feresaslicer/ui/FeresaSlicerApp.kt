@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -24,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
@@ -35,6 +37,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.darkColorScheme
@@ -72,6 +75,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.SemanticsPropertyKey
+import androidx.compose.ui.semantics.SemanticsPropertyReceiver
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
@@ -79,6 +85,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -89,9 +96,9 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import tech.g24.feresaslicer.slicer.OrcaDynamicPrintConfigBuilder
 import tech.g24.feresaslicer.slicer.OrcaMachineFilamentScalars
-import tech.g24.feresaslicer.slicer.OrcaNativeEngine
+import tech.g24.feresaslicer.slicer.OrcaPlateSliceFiles
+import tech.g24.feresaslicer.slicer.OrcaPlateSlicePipeline
 import tech.g24.feresaslicer.slicer.OrcaProfileSettingsResolver
 import tech.g24.feresaslicer.slicer.OrcaProcessSettingsPayload
 import tech.g24.feresaslicer.slicer.OrcaSelectedProfiles
@@ -166,6 +173,12 @@ private val DarkColors = darkColorScheme(
     outlineVariant = Color(0xFF3E4843),
 )
 
+internal const val ModelSliceActionTestTag = "model-slice-action"
+internal const val ModelSliceResultTestTag = "model-slice-result"
+internal const val ModelToolpathViewerTestTag = "model-toolpath-viewer"
+internal val RenderedToolpathSegmentsKey = SemanticsPropertyKey<Long>("RenderedToolpathSegments")
+internal var SemanticsPropertyReceiver.renderedToolpathSegments by RenderedToolpathSegmentsKey
+
 private enum class AppThemeMode(val label: String) {
     SYSTEM("Системная"),
     LIGHT("Светлая"),
@@ -209,6 +222,22 @@ private enum class ModelWorkspaceSection(val label: String, val icon: Int) {
     SLICE("Нарезка", R.drawable.ic_workspace_slice),
 }
 
+private enum class PositionWorkspaceTool(val label: String, val icon: Int) {
+    ARRANGE("Расставить", R.drawable.ic_nav_model),
+    AUTO_ORIENT("Автоориент. (бета)", R.drawable.ic_nav_print),
+    POSITION("Позиция", R.drawable.ic_nav_profiles),
+    ROTATION("Поворот", R.drawable.ic_nav_print),
+    SCALE("Масштаб", R.drawable.ic_nav_profiles),
+    LAY_FLAT("Крупнейшей гранью", R.drawable.ic_nav_model),
+}
+
+private data class SuggestedModelOrientation(
+    val rotationXDegrees: Double,
+    val rotationYDegrees: Double,
+    val rotationZDegrees: Double,
+    val positionZmm: Double,
+)
+
 private enum class ProfileSection(val label: String) {
     PRINTER("Printer"),
     FILAMENT("Filament"),
@@ -222,7 +251,7 @@ private data class PrinterDialogResult(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FeresaSlicerApp() {
+fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
     val context = LocalContext.current
     val applicationContext = context.applicationContext
     val scope = rememberCoroutineScope()
@@ -269,7 +298,9 @@ fun FeresaSlicerApp() {
             }
         }
     }
-    var plateWorkspace by remember { mutableStateOf(PlateWorkspace.empty()) }
+    var plateWorkspace by remember {
+        mutableStateOf(initialPlateWorkspace ?: PlateWorkspace.empty())
+    }
     var generatedGcode by remember { mutableStateOf<File?>(null) }
     var generatedGcodeGeneration by remember { mutableStateOf<Long?>(null) }
     var report by remember { mutableStateOf<SliceReport?>(null) }
@@ -307,15 +338,27 @@ fun FeresaSlicerApp() {
     val cloudProfileState by authViewModel.profileState.collectAsState()
     val isReviewerDemo = (authState as? OrcaAuthState.SignedIn)?.mode == OrcaAuthMode.REVIEW_DEMO
     var destination by remember { mutableStateOf(AppDestination.MODEL) }
-    var modelWorkspaceSection by remember { mutableStateOf(ModelWorkspaceSection.FILE) }
+    var modelWorkspaceSection by remember {
+        mutableStateOf(
+            if (initialPlateWorkspace?.objects.isNullOrEmpty()) {
+                ModelWorkspaceSection.FILE
+            } else {
+                ModelWorkspaceSection.SLICE
+            },
+        )
+    }
     var renameObjectId by remember { mutableStateOf<PlateObjectId?>(null) }
     var renameObjectValue by remember { mutableStateOf("") }
     var linkScaleAxes by remember { mutableStateOf(true) }
     var modelActionMessage by remember { mutableStateOf<String?>(null) }
     var cameraResetRequest by remember { mutableStateOf(0) }
-    var selectedCameraViewPreset by remember { mutableStateOf(CameraViewPreset.ISOMETRIC) }
+    var selectedCameraViewPreset by remember { mutableStateOf<CameraViewPreset?>(CameraViewPreset.ISOMETRIC) }
     var cameraViewRequest by remember { mutableStateOf<CameraViewRequest?>(null) }
     var cameraViewRequestId by remember { mutableStateOf(0) }
+    var cameraFramingRequest by remember { mutableStateOf<CameraFramingRequest?>(null) }
+    var cameraFramingRequestId by remember { mutableStateOf(0) }
+    var viewerCameraState by remember { mutableStateOf<ViewerCameraState?>(null) }
+    var selectedPositionTool by remember { mutableStateOf<PositionWorkspaceTool?>(null) }
     var toolpathMinimumLayer by remember { mutableStateOf(0) }
     var toolpathMaximumLayer by remember { mutableStateOf(0) }
     var toolpathColorMode by remember { mutableStateOf(ToolpathColorMode.LINE_WIDTH) }
@@ -381,6 +424,79 @@ fun FeresaSlicerApp() {
                 errorMessage = error.message ?: "Не удалось разместить модель на столе"
             }
             isWorking = false
+        }
+    }
+
+    fun orientSelectedModel(
+        useBasicAutoOrientation: Boolean,
+        centerAfterOrientation: Boolean,
+        message: String,
+    ) {
+        val selectedModel = plateWorkspace.selectedObject ?: return
+        val selectedId = selectedModel.id
+        val selectedFile = selectedModel.source.file
+        val buildVolume = RectangularBuildVolume(bedWidth, bedDepth, printableHeight)
+        scope.launch {
+            isWorking = true
+            try {
+                runCatching {
+                    val orientation = withContext(Dispatchers.Default) {
+                        if (useBasicAutoOrientation) {
+                            StlPlateComposer.suggestBasicAutoOrientation(
+                                file = selectedFile,
+                                bedWidthMm = bedWidth,
+                                bedDepthMm = bedDepth,
+                                maximumHeightMm = printableHeight,
+                            )?.let {
+                                SuggestedModelOrientation(
+                                    rotationXDegrees = it.rotationXDegrees,
+                                    rotationYDegrees = it.rotationYDegrees,
+                                    rotationZDegrees = it.rotationZDegrees,
+                                    positionZmm = it.positionZmm,
+                                )
+                            }
+                        } else {
+                            StlPlateComposer.suggestLayFlat(selectedFile)?.let {
+                                SuggestedModelOrientation(
+                                    rotationXDegrees = it.rotationXDegrees,
+                                    rotationYDegrees = it.rotationYDegrees,
+                                    rotationZDegrees = it.rotationZDegrees,
+                                    positionZmm = it.positionZmm,
+                                )
+                            }
+                        } ?: error("Не удалось найти подходящую ориентацию")
+                    }
+
+                    // Apply the computed orientation to the latest plate snapshot. This preserves
+                    // a selection change that may happen while the geometry heuristic is running.
+                    val currentWorkspace = plateWorkspace
+                    val currentModel = currentWorkspace.objectOrNull(selectedId)
+                        ?: error("Модель больше не находится на столе")
+                    require(currentModel.source.file == selectedFile) {
+                        "Исходная модель изменилась во время автоориентации"
+                    }
+                    var orientedWorkspace = currentWorkspace.updateTransform(selectedId) {
+                        it.copy(
+                            rotationXDegrees = orientation.rotationXDegrees,
+                            rotationYDegrees = orientation.rotationYDegrees,
+                            rotationDegrees = orientation.rotationZDegrees,
+                            positionZmm = orientation.positionZmm,
+                        )
+                    }
+                    if (centerAfterOrientation) {
+                        orientedWorkspace = orientedWorkspace.center(selectedId, buildVolume)
+                    }
+                    withContext(Dispatchers.Default) {
+                        orientedWorkspace.moveObjectToExactBed(selectedId)
+                    }
+                }.onSuccess { exactWorkspace ->
+                    commitPlateWorkspace(exactWorkspace, message)
+                }.onFailure { error ->
+                    errorMessage = error.message ?: "Не удалось ориентировать модель"
+                }
+            } finally {
+                isWorking = false
+            }
         }
     }
 
@@ -644,6 +760,11 @@ fun FeresaSlicerApp() {
         plateWorkspace.selectedObjectId?.let { selectedId ->
             plateWorkspace = plateWorkspace.remove(selectedId)
         }
+        if (plateWorkspace.objects.isEmpty()) {
+            modelWorkspaceSection = ModelWorkspaceSection.FILE
+            selectedPositionTool = null
+            viewerCameraState = null
+        }
         invalidatePlateSlice()
         viewerMessage = null
         modelActionMessage = null
@@ -730,45 +851,28 @@ fun FeresaSlicerApp() {
                     } else {
                         selectedProfiles
                     }
-                    val dynamicConfig = OrcaDynamicPrintConfigBuilder.build(
-                        profiles = hydratedProfiles,
-                        machineFilament = OrcaMachineFilamentScalars(
-                            bedWidthMm = bedWidth,
-                            bedDepthMm = bedDepth,
-                            printableHeightMm = printableHeight,
-                            nozzleDiameterMm = nozzleDiameter,
-                            filamentDiameterMm = filamentDiameter,
-                            nozzleTemperatureC = nozzleTemperature,
-                            bedTemperatureC = bedTemperature,
-                            gcodeFlavor = printerFirmware,
-                        ),
-                        liveProcessSettings = liveProcessPayload,
+                    val machineFilament = OrcaMachineFilamentScalars(
+                        bedWidthMm = bedWidth,
+                        bedDepthMm = bedDepth,
+                        printableHeightMm = printableHeight,
+                        nozzleDiameterMm = nozzleDiameter,
+                        filamentDiameterMm = filamentDiameter,
+                        nozzleTemperatureC = nozzleTemperature,
+                        bedTemperatureC = bedTemperature,
+                        gcodeFlavor = printerFirmware,
                     )
-                    dynamicConfig.writeTo(configFile)
-                    // Always compose the complete plate, including a one-object plate. This makes
-                    // the geometry handed to Orca identical to the XYZ/non-uniform transform shown
-                    // by the viewer instead of silently reducing it to legacy Z rotation + scale.
-                    val composed = StlPlateComposer.compose(
+                    OrcaPlateSlicePipeline.slice(
                         placements = plateSnapshot.objects.map { it.toStlPlatePlacement() },
-                        output = plateFile,
-                    )
-                    val sliceSource = composed.file
-                    val sliceSettings = settings.copy(
-                        modelPositionXmm = composed.bounds.centerX,
-                        modelPositionYmm = composed.bounds.centerY,
-                        modelRotationDegrees = 0.0,
-                        modelScale = 1.0,
-                        // The plate composer already applied the complete XYZ transform. Keeping
-                        // its Z coordinates is essential for intentionally raised objects and
-                        // support generation; Orca must not silently drop the plate back to Z=0.
-                        ensureModelOnBed = false,
-                    )
-                    OrcaNativeEngine().sliceModel(
-                        inputPath = sliceSource.path,
-                        configPath = configFile.path,
-                        outputPath = outputFile.path,
-                        settings = sliceSettings,
-                    )
+                        profiles = hydratedProfiles,
+                        machineFilament = machineFilament,
+                        liveProcessSettings = liveProcessPayload,
+                        baseSettings = settings,
+                        files = OrcaPlateSliceFiles(
+                            config = configFile,
+                            composedPlate = plateFile,
+                            gcode = outputFile,
+                        ),
+                    ).report
                 }
             }.onSuccess { result ->
                 if (sliceGeneration != generationSnapshot) {
@@ -805,6 +909,15 @@ fun FeresaSlicerApp() {
         }
     }
 
+    LaunchedEffect(modelWorkspaceSection) {
+        if (modelWorkspaceSection != ModelWorkspaceSection.POSITION) {
+            selectedPositionTool = null
+        }
+    }
+    BackHandler(enabled = selectedPositionTool != null) {
+        selectedPositionTool = null
+    }
+
     CompositionLocalProvider(LocalUiLanguage provides uiLanguage) {
         MaterialTheme(colorScheme = appColorScheme) {
             Scaffold(
@@ -817,7 +930,8 @@ fun FeresaSlicerApp() {
                     if (
                         destination == AppDestination.MODEL &&
                         hasPlateModels &&
-                        modelWorkspaceSection != ModelWorkspaceSection.VIEW
+                        modelWorkspaceSection != ModelWorkspaceSection.VIEW &&
+                        modelWorkspaceSection != ModelWorkspaceSection.POSITION
                     ) {
                         ModelWorkspaceNavigation(
                             selected = modelWorkspaceSection,
@@ -869,12 +983,15 @@ fun FeresaSlicerApp() {
             },
         ) { contentPadding ->
             key(destination) {
-            val showFullScreenModelPreview =
+            val showPersistentModelCanvas =
                 destination == AppDestination.MODEL &&
                     hasPlateModels &&
-                    modelWorkspaceSection == ModelWorkspaceSection.VIEW
+                    (
+                        modelWorkspaceSection == ModelWorkspaceSection.VIEW ||
+                            modelWorkspaceSection == ModelWorkspaceSection.POSITION
+                    )
 
-            if (showFullScreenModelPreview) {
+            if (showPersistentModelCanvas) {
                 Box(
                     modifier = Modifier
                         .padding(
@@ -893,6 +1010,8 @@ fun FeresaSlicerApp() {
                         darkTheme = useDarkTheme,
                         cameraResetRequest = cameraResetRequest,
                         cameraViewRequest = cameraViewRequest,
+                        cameraFramingRequest = cameraFramingRequest,
+                        initialCameraState = viewerCameraState,
                         modelObjects = viewerModelObjects,
                         selectedObjectId = plateWorkspace.selectedObjectId?.value,
                         onObjectSelected = ::applyViewerSelection,
@@ -900,17 +1019,17 @@ fun FeresaSlicerApp() {
                             viewerSceneState = it
                             viewerMessage = null
                         },
+                        onCameraStateChange = { state ->
+                            viewerCameraState = state
+                            selectedCameraViewPreset = state.preset
+                                .takeIf { state.mode == ViewerCameraMode.PRESET }
+                        },
                         onError = { viewerMessage = it },
                         viewerHeight = null,
                         showStatus = false,
                         modifier = Modifier.fillMaxSize(),
                     )
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
+                    if (modelWorkspaceSection == ModelWorkspaceSection.VIEW) {
                         CameraViewPresetOverlay(
                             selectedPreset = selectedCameraViewPreset,
                             onSelect = { preset ->
@@ -921,25 +1040,132 @@ fun FeresaSlicerApp() {
                                     preset = preset,
                                 )
                             },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        viewerMessage?.let { message ->
-                            androidx.compose.material3.Surface(
-                                modifier = Modifier
-                                    .padding(horizontal = 12.dp)
-                                    .fillMaxWidth(),
-                                color = MaterialTheme.colorScheme.errorContainer,
-                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                                shape = RoundedCornerShape(14.dp),
-                                shadowElevation = 6.dp,
-                                tonalElevation = 2.dp,
-                            ) {
-                                Text(
-                                    text = message,
-                                    modifier = Modifier.padding(12.dp),
-                                    fontSize = 12.sp,
+                            onFitModel = {
+                                cameraFramingRequestId += 1
+                                cameraFramingRequest = CameraFramingRequest(
+                                    requestId = cameraFramingRequestId,
+                                    target = if (plateWorkspace.selectedObjectId != null) {
+                                        CameraFramingTarget.SELECTED_MODEL
+                                    } else {
+                                        CameraFramingTarget.MODELS
+                                    },
                                 )
-                            }
+                            },
+                            onShowBed = {
+                                cameraFramingRequestId += 1
+                                cameraFramingRequest = CameraFramingRequest(
+                                    requestId = cameraFramingRequestId,
+                                    target = CameraFramingTarget.PRINT_BED,
+                                )
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                    if (modelWorkspaceSection == ModelWorkspaceSection.POSITION) {
+                        PositionWorkspaceOverlay(
+                            selectedTool = selectedPositionTool,
+                            selectedModel = selectedPlateObject,
+                            selectedModelInsideBed = plateWorkspace.selectedObjectId?.let { selectedId ->
+                                plateWorkspace.validate(
+                                    RectangularBuildVolume(bedWidth, bedDepth, printableHeight),
+                                ).objectResult(selectedId)?.insideBuildVolume
+                            },
+                            hasModels = plateWorkspace.objects.isNotEmpty(),
+                            bedWidth = bedWidth,
+                            bedDepth = bedDepth,
+                            printableHeight = printableHeight,
+                            linkScaleAxes = linkScaleAxes,
+                            isWorking = isWorking,
+                            onLinkScaleAxesChange = { linkScaleAxes = it },
+                            onToolSelected = { tool ->
+                                when (tool) {
+                                    PositionWorkspaceTool.ARRANGE -> {
+                                        val arranged = plateWorkspace.autoArrange(
+                                            RectangularBuildVolume(bedWidth, bedDepth, printableHeight),
+                                        )
+                                        commitPlateWorkspace(
+                                            arranged.workspace,
+                                            if (arranged.allPlaced) {
+                                                "Модели автоматически расставлены"
+                                            } else {
+                                                "Не поместилось моделей: ${arranged.unplacedObjectIds.size}"
+                                            },
+                                        )
+                                    }
+
+                                    PositionWorkspaceTool.AUTO_ORIENT -> orientSelectedModel(
+                                        useBasicAutoOrientation = true,
+                                        centerAfterOrientation = true,
+                                        message = "Модель автоматически ориентирована",
+                                    )
+
+                                    PositionWorkspaceTool.LAY_FLAT -> orientSelectedModel(
+                                        useBasicAutoOrientation = false,
+                                        centerAfterOrientation = false,
+                                        message = "Модель положена крупнейшей гранью",
+                                    )
+
+                                    else -> {
+                                        selectedPositionTool = if (selectedPositionTool == tool) null else tool
+                                    }
+                                }
+                            },
+                            onTransformChange = ::updateSelectedTransform,
+                            onCenter = {
+                                plateWorkspace.selectedObjectId?.let { selectedId ->
+                                    commitPlateWorkspace(
+                                        plateWorkspace.center(
+                                            selectedId,
+                                            RectangularBuildVolume(bedWidth, bedDepth, printableHeight),
+                                        ),
+                                        "Модель размещена по центру",
+                                    )
+                                }
+                            },
+                            onPlaceOnBed = {
+                                plateWorkspace.selectedObjectId?.let { selectedId ->
+                                    commitPlateWorkspaceOnExactBed(
+                                        updated = plateWorkspace,
+                                        objectId = selectedId,
+                                        message = "Модель опущена на стол",
+                                    )
+                                }
+                            },
+                            onRotate90 = {
+                                plateWorkspace.selectedObjectId?.let { selectedId ->
+                                    commitPlateWorkspaceOnExactBed(
+                                        updated = plateWorkspace.rotate(selectedId, PlateAxis.Z, 90.0),
+                                        objectId = selectedId,
+                                        message = "Модель повёрнута на 90°",
+                                    )
+                                }
+                            },
+                            onResetScale = {
+                                updateSelectedTransform {
+                                    it.copy(scale = 1.0, scaleX = 1.0, scaleY = 1.0, scaleZ = 1.0)
+                                }
+                            },
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(bottom = 82.dp),
+                        )
+                    }
+                    viewerMessage?.let { message ->
+                        androidx.compose.material3.Surface(
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(horizontal = 72.dp, vertical = 12.dp),
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                            shape = RoundedCornerShape(14.dp),
+                            shadowElevation = 6.dp,
+                            tonalElevation = 2.dp,
+                        ) {
+                            Text(
+                                text = message,
+                                modifier = Modifier.padding(12.dp),
+                                fontSize = 12.sp,
+                            )
                         }
                     }
                     ModelWorkspaceNavigation(
@@ -2310,75 +2536,313 @@ private fun ThemeModeSelector(
 }
 
 @Composable
-private fun CameraViewPresetOverlay(
-    selectedPreset: CameraViewPreset,
-    onSelect: (CameraViewPreset) -> Unit,
+private fun PositionWorkspaceOverlay(
+    selectedTool: PositionWorkspaceTool?,
+    selectedModel: PlateObject?,
+    selectedModelInsideBed: Boolean?,
+    hasModels: Boolean,
+    bedWidth: Double,
+    bedDepth: Double,
+    printableHeight: Double,
+    linkScaleAxes: Boolean,
+    isWorking: Boolean,
+    onLinkScaleAxesChange: (Boolean) -> Unit,
+    onToolSelected: (PositionWorkspaceTool) -> Unit,
+    onTransformChange: ((PlateObjectTransform) -> PlateObjectTransform) -> Unit,
+    onCenter: () -> Unit,
+    onPlaceOnBed: () -> Unit,
+    onRotate90: () -> Unit,
+    onResetScale: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val language = currentUiLanguage()
-    androidx.compose.material3.Surface(
-        modifier = modifier.padding(start = 12.dp, top = 12.dp, end = 12.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
-        shape = RoundedCornerShape(20.dp),
-        shadowElevation = 10.dp,
-        tonalElevation = 4.dp,
+    val selectedTransform = selectedModel?.transform
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-        LazyRow(
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 7.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        if (
+            selectedTransform != null &&
+            selectedTool in setOf(
+                PositionWorkspaceTool.POSITION,
+                PositionWorkspaceTool.ROTATION,
+                PositionWorkspaceTool.SCALE,
+            )
         ) {
-            items(CameraViewPreset.entries, key = CameraViewPreset::name) { preset ->
-                val label = cameraViewPresetLabel(preset, language)
-                val isSelected = preset == selectedPreset
-                androidx.compose.material3.Surface(
+            androidx.compose.material3.Surface(
+                modifier = Modifier
+                    .padding(horizontal = 12.dp)
+                    .fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f),
+                shape = RoundedCornerShape(20.dp),
+                shadowElevation = 12.dp,
+                tonalElevation = 5.dp,
+            ) {
+                Column(
                     modifier = Modifier
-                        .width(72.dp)
-                        .clickable { onSelect(preset) },
-                    color = if (isSelected) {
-                        MaterialTheme.colorScheme.primaryContainer
-                    } else {
-                        Color.Transparent
-                    },
-                    contentColor = if (isSelected) Accent else Muted,
-                    shape = RoundedCornerShape(15.dp),
+                        .heightIn(max = 300.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_workspace_camera),
-                            contentDescription = label,
-                            modifier = Modifier.size(20.dp),
-                        )
                         Text(
-                            text = label,
-                            fontSize = 9.sp,
-                            lineHeight = 10.sp,
-                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
+                            localizeUiText(selectedTool?.label.orEmpty(), language),
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 16.sp,
                         )
+                        selectedModelInsideBed?.let { insideBed ->
+                            Text(
+                                localizeUiText(
+                                    if (insideBed) "В пределах стола" else "Вне стола",
+                                    language,
+                                ),
+                                color = if (insideBed) Accent else MaterialTheme.colorScheme.error,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                            )
+                        }
+                    }
+
+                    when (selectedTool) {
+                        PositionWorkspaceTool.POSITION -> {
+                            TransformSlider(
+                                label = localizeUiText("Позиция X", language),
+                                value = selectedTransform.positionXmm,
+                                range = 0f..bedWidth.toFloat(),
+                                suffix = localizeUiText("мм", language),
+                                enabled = !isWorking,
+                                onValueChange = { value ->
+                                    onTransformChange { it.copy(positionXmm = value) }
+                                },
+                            )
+                            TransformSlider(
+                                label = localizeUiText("Позиция Y", language),
+                                value = selectedTransform.positionYmm,
+                                range = 0f..bedDepth.toFloat(),
+                                suffix = localizeUiText("мм", language),
+                                enabled = !isWorking,
+                                onValueChange = { value ->
+                                    onTransformChange { it.copy(positionYmm = value) }
+                                },
+                            )
+                            TransformSlider(
+                                label = localizeUiText("Позиция Z", language),
+                                value = selectedTransform.positionZmm,
+                                range = 0f..printableHeight.toFloat(),
+                                suffix = localizeUiText("мм", language),
+                                enabled = !isWorking,
+                                onValueChange = { value ->
+                                    onTransformChange { it.copy(positionZmm = value) }
+                                },
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                OutlinedButton(
+                                    onClick = onCenter,
+                                    enabled = !isWorking,
+                                    modifier = Modifier.weight(1f),
+                                ) { Text(localizeUiText("По центру", language)) }
+                                OutlinedButton(
+                                    onClick = onPlaceOnBed,
+                                    enabled = !isWorking,
+                                    modifier = Modifier.weight(1f),
+                                ) { Text(localizeUiText("На стол", language)) }
+                            }
+                        }
+
+                        PositionWorkspaceTool.ROTATION -> {
+                            TransformSlider(
+                                label = localizeUiText("Поворот X", language),
+                                value = selectedTransform.rotationXDegrees,
+                                range = 0f..360f,
+                                suffix = "°",
+                                enabled = !isWorking,
+                                onValueChange = { value ->
+                                    onTransformChange { it.copy(rotationXDegrees = value) }
+                                },
+                            )
+                            TransformSlider(
+                                label = localizeUiText("Поворот Y", language),
+                                value = selectedTransform.rotationYDegrees,
+                                range = 0f..360f,
+                                suffix = "°",
+                                enabled = !isWorking,
+                                onValueChange = { value ->
+                                    onTransformChange { it.copy(rotationYDegrees = value) }
+                                },
+                            )
+                            TransformSlider(
+                                label = localizeUiText("Поворот Z", language),
+                                value = selectedTransform.rotationZDegrees,
+                                range = 0f..360f,
+                                suffix = "°",
+                                enabled = !isWorking,
+                                onValueChange = { value ->
+                                    onTransformChange { it.copy(rotationDegrees = value) }
+                                },
+                            )
+                            OutlinedButton(
+                                onClick = onRotate90,
+                                enabled = !isWorking,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text(localizeUiText("Повернуть Z 90°", language)) }
+                        }
+
+                        PositionWorkspaceTool.SCALE -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    localizeUiText("Сохранять пропорции", language),
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                Switch(
+                                    checked = linkScaleAxes,
+                                    onCheckedChange = onLinkScaleAxesChange,
+                                    enabled = !isWorking,
+                                )
+                            }
+                            if (linkScaleAxes) {
+                                TransformSlider(
+                                    label = localizeUiText("Масштаб", language),
+                                    value = selectedTransform.effectiveScaleX,
+                                    range = 0.1f..3f,
+                                    suffix = "×",
+                                    decimals = 2,
+                                    enabled = !isWorking,
+                                    onValueChange = { value ->
+                                        onTransformChange {
+                                            it.copy(
+                                                scale = value,
+                                                scaleX = 1.0,
+                                                scaleY = 1.0,
+                                                scaleZ = 1.0,
+                                            )
+                                        }
+                                    },
+                                )
+                            } else {
+                                listOf(
+                                    Triple(
+                                        localizeUiText("Масштаб X", language),
+                                        selectedTransform.effectiveScaleX,
+                                        PlateAxis.X,
+                                    ),
+                                    Triple(
+                                        localizeUiText("Масштаб Y", language),
+                                        selectedTransform.effectiveScaleY,
+                                        PlateAxis.Y,
+                                    ),
+                                    Triple(
+                                        localizeUiText("Масштаб Z", language),
+                                        selectedTransform.effectiveScaleZ,
+                                        PlateAxis.Z,
+                                    ),
+                                ).forEach { (label, value, axis) ->
+                                    TransformSlider(
+                                        label = label,
+                                        value = value,
+                                        range = 0.1f..3f,
+                                        suffix = "×",
+                                        decimals = 2,
+                                        enabled = !isWorking,
+                                        onValueChange = { nextValue ->
+                                            onTransformChange { transform ->
+                                                when (axis) {
+                                                    PlateAxis.X -> transform.copy(scaleX = nextValue / transform.scale)
+                                                    PlateAxis.Y -> transform.copy(scaleY = nextValue / transform.scale)
+                                                    PlateAxis.Z -> transform.copy(scaleZ = nextValue / transform.scale)
+                                                }
+                                            }
+                                        },
+                                    )
+                                }
+                            }
+                            OutlinedButton(
+                                onClick = onResetScale,
+                                enabled = !isWorking,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text(localizeUiText("Масштаб 1:1", language)) }
+                        }
+
+                        else -> Unit
+                    }
+                }
+            }
+        }
+
+        androidx.compose.material3.Surface(
+            modifier = Modifier
+                .padding(horizontal = 8.dp)
+                .fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 12.dp,
+            tonalElevation = 4.dp,
+        ) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                items(PositionWorkspaceTool.entries, key = PositionWorkspaceTool::name) { tool ->
+                    val enabled = !isWorking && when (tool) {
+                        PositionWorkspaceTool.ARRANGE -> hasModels
+                        else -> selectedModel != null
+                    }
+                    val isSelected = tool == selectedTool
+                    val tint = when {
+                        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                        isSelected -> MaterialTheme.colorScheme.onPrimaryContainer
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                    androidx.compose.material3.Surface(
+                        modifier = Modifier
+                            .width(78.dp)
+                            .clickable(enabled = enabled) { onToolSelected(tool) },
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            Color.Transparent
+                        },
+                        contentColor = tint,
+                        shape = RoundedCornerShape(15.dp),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Icon(
+                                painter = painterResource(tool.icon),
+                                contentDescription = localizeUiText(tool.label, language),
+                                tint = tint,
+                                modifier = Modifier.size(22.dp),
+                            )
+                            Text(
+                                text = localizeUiText(tool.label, language),
+                                color = tint,
+                                fontSize = 9.sp,
+                                lineHeight = 10.sp,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                textAlign = TextAlign.Center,
+                                maxLines = 2,
+                            )
+                        }
                     }
                 }
             }
         }
     }
-}
-
-private fun cameraViewPresetLabel(
-    preset: CameraViewPreset,
-    language: UiLanguage,
-): String = when (preset) {
-    CameraViewPreset.ISOMETRIC -> if (language == UiLanguage.RUSSIAN) "Изометрия" else "Isometric"
-    CameraViewPreset.TOP -> if (language == UiLanguage.RUSSIAN) "Сверху" else "Top"
-    CameraViewPreset.BOTTOM -> if (language == UiLanguage.RUSSIAN) "Снизу" else "Bottom"
-    CameraViewPreset.FRONT -> if (language == UiLanguage.RUSSIAN) "Спереди" else "Front"
-    CameraViewPreset.BACK -> if (language == UiLanguage.RUSSIAN) "Сзади" else "Back"
-    CameraViewPreset.LEFT -> if (language == UiLanguage.RUSSIAN) "Слева" else "Left"
-    CameraViewPreset.RIGHT -> if (language == UiLanguage.RUSSIAN) "Справа" else "Right"
 }
 
 @Composable
@@ -2387,6 +2851,7 @@ private fun ModelWorkspaceNavigation(
     onSelect: (ModelWorkspaceSection) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val language = currentUiLanguage()
     val sections = listOf(
         ModelWorkspaceSection.VIEW,
         ModelWorkspaceSection.POSITION,
@@ -2421,12 +2886,12 @@ private fun ModelWorkspaceNavigation(
                 ) {
                     Icon(
                         painter = painterResource(section.icon),
-                        contentDescription = localizeUiText(section.label, currentUiLanguage()),
+                        contentDescription = localizeUiText(section.label, language),
                         tint = if (isSelected) Accent else Muted,
                         modifier = Modifier.size(23.dp),
                     )
                     Text(
-                        text = section.label,
+                        text = localizeUiText(section.label, language),
                         color = if (isSelected) Accent else Muted,
                         fontSize = 10.sp,
                         fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
@@ -3463,6 +3928,7 @@ private fun TransformSlider(
     range: ClosedFloatingPointRange<Float>,
     suffix: String,
     decimals: Int = 1,
+    enabled: Boolean = true,
     onValueChange: (Double) -> Unit,
 ) {
     val formattedValue = String.format(Locale.US, "%.${decimals}f", value)
@@ -3471,112 +3937,9 @@ private fun TransformSlider(
         value = value.toFloat().coerceIn(range.start, range.endInclusive),
         onValueChange = { onValueChange(it.toDouble()) },
         valueRange = range,
+        enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
     )
-}
-
-private data class GcodeMotion(
-    val lineNumber: Int,
-    val source: String,
-    val x: Double,
-    val y: Double,
-    val z: Double,
-    val speedMmSeconds: Double,
-    val extrusion: Boolean,
-    val layer: Int,
-)
-
-private data class GcodePreviewData(
-    val lineCount: Int,
-    val motions: List<GcodeMotion>,
-)
-
-private fun GcodePreviewData.layerZ(layer: Int): Double? =
-    motions.firstOrNull { motion -> motion.layer == layer && motion.extrusion && motion.z > 0.0 }?.z
-        ?: motions.firstOrNull { motion -> motion.layer == layer && motion.z > 0.0 }?.z
-
-private val GcodePreviewWord = Regex(
-    "([XYZEF])\\s*(-?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?)",
-    RegexOption.IGNORE_CASE,
-)
-
-private fun parseGcodePreview(file: File): GcodePreviewData {
-    var x = 0.0
-    var y = 0.0
-    var z = 0.0
-    var e = 0.0
-    var feedRate = 0.0
-    var layer = 0
-    var layerChangeSeen = false
-    var absoluteAxes = true
-    var absoluteExtrusion = true
-    var lineCount = 0
-    val motions = ArrayList<GcodeMotion>()
-
-    file.useLines { lines ->
-        lines.forEach { sourceLine ->
-            lineCount += 1
-            val explicitLayer = Regex(";\\s*LAYER\\s*:\\s*(\\d+)", RegexOption.IGNORE_CASE)
-                .find(sourceLine)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.toIntOrNull()
-            if (explicitLayer != null) {
-                layer = explicitLayer
-            } else if (Regex(";\\s*(?:LAYER_CHANGE|CHANGE_LAYER)\\b", RegexOption.IGNORE_CASE)
-                    .containsMatchIn(sourceLine)
-            ) {
-                if (layerChangeSeen) layer += 1
-                layerChangeSeen = true
-            }
-
-            val command = sourceLine.substringBefore(';').trim().uppercase(Locale.US)
-            when {
-                command.startsWith("G90") -> absoluteAxes = true
-                command.startsWith("G91") -> absoluteAxes = false
-                command.startsWith("M82") -> absoluteExtrusion = true
-                command.startsWith("M83") -> absoluteExtrusion = false
-                command.startsWith("G92") -> {
-                    val words = GcodePreviewWord.findAll(command).associate {
-                        it.groupValues[1].uppercase(Locale.US) to it.groupValues[2].toDouble()
-                    }
-                    words["X"]?.let { x = it }
-                    words["Y"]?.let { y = it }
-                    words["Z"]?.let { z = it }
-                    words["E"]?.let { e = it }
-                }
-                command.matches(Regex("G0?[0-3](?:\\s.*)?")) -> {
-                    val words = GcodePreviewWord.findAll(command).associate {
-                        it.groupValues[1].uppercase(Locale.US) to it.groupValues[2].toDouble()
-                    }
-                    val nextX = words["X"]?.let { if (absoluteAxes) it else x + it } ?: x
-                    val nextY = words["Y"]?.let { if (absoluteAxes) it else y + it } ?: y
-                    val nextZ = words["Z"]?.let { if (absoluteAxes) it else z + it } ?: z
-                    val nextE = words["E"]?.let { if (absoluteExtrusion) it else e + it } ?: e
-                    words["F"]?.let { feedRate = it }
-                    if (nextX != x || nextY != y) {
-                        motions += GcodeMotion(
-                            lineNumber = lineCount,
-                            source = sourceLine.trim().take(180),
-                            x = nextX,
-                            y = nextY,
-                            z = nextZ,
-                            speedMmSeconds = feedRate / 60.0,
-                            extrusion = !command.startsWith("G0 ") &&
-                                !command.startsWith("G00 ") &&
-                                nextE > e + 0.0000001,
-                            layer = layer,
-                        )
-                    }
-                    x = nextX
-                    y = nextY
-                    z = nextZ
-                    e = nextE
-                }
-            }
-        }
-    }
-    return GcodePreviewData(lineCount = lineCount, motions = motions)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -3618,10 +3981,6 @@ private fun OrcaSliceWorkspace(
 ) {
     val hasModels = modelObjects.isNotEmpty() || modelFile != null
     val successfulReport = report?.takeIf { it.success }
-    val previewData = remember(gcodeFile, gcodeFile?.lastModified()) {
-        gcodeFile?.takeIf { it.isFile }?.let { file -> runCatching { parseGcodePreview(file) }.getOrNull() }
-    }
-
     if (gcodeFile == null || successfulReport == null) {
         Card(
             colors = CardDefaults.cardColors(containerColor = Surface),
@@ -3632,22 +3991,43 @@ private fun OrcaSliceWorkspace(
                 modifier = Modifier.padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                ModelViewer(
-                    modelFile = modelFile,
-                    gcodeFile = null,
-                    transform = transform,
-                    bedWidth = bedWidth,
-                    bedDepth = bedDepth,
-                    mode = ViewerMode.MODEL,
-                    darkTheme = darkTheme,
-                    cameraResetRequest = cameraResetRequest,
-                    modelObjects = modelObjects,
-                    selectedObjectId = selectedObjectId,
-                    onObjectSelected = onObjectSelected,
-                    onSceneState = onSceneState,
-                    onError = onViewerError,
-                    viewerHeight = 430.dp,
-                )
+                if (isWorking) {
+                    // Orca's native pipeline is memory intensive. Releasing the WebView/WebGL
+                    // renderer while it runs avoids keeping a second copy of the model and its
+                    // GPU resources alive at the same time, which can otherwise make Android's
+                    // low-memory killer terminate Feresa on smaller devices.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(430.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CircularProgressIndicator()
+                            Text("Нарезка модели…", color = Muted, fontSize = 14.sp)
+                        }
+                    }
+                } else {
+                    ModelViewer(
+                        modelFile = modelFile,
+                        gcodeFile = null,
+                        transform = transform,
+                        bedWidth = bedWidth,
+                        bedDepth = bedDepth,
+                        mode = ViewerMode.MODEL,
+                        darkTheme = darkTheme,
+                        cameraResetRequest = cameraResetRequest,
+                        modelObjects = modelObjects,
+                        selectedObjectId = selectedObjectId,
+                        onObjectSelected = onObjectSelected,
+                        onSceneState = onSceneState,
+                        onError = onViewerError,
+                        viewerHeight = 430.dp,
+                    )
+                }
                 Text(
                     if (!hasModels) {
                         "Выберите STL во вкладке «Файл», затем вернитесь сюда для нарезки."
@@ -3660,7 +4040,9 @@ private fun OrcaSliceWorkspace(
                 Button(
                     onClick = onSlice,
                     enabled = hasModels && !isWorking,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag(ModelSliceActionTestTag),
                 ) {
                     Text(if (isWorking) "Нарезка…" else "НАРЕЗАТЬ МОДЕЛЬ")
                 }
@@ -3673,29 +4055,20 @@ private fun OrcaSliceWorkspace(
     var colorMenuExpanded by remember { mutableStateOf(false) }
     var gcodeExpanded by remember(gcodeFile) { mutableStateOf(false) }
     var toolpathSelection by remember(gcodeFile) { mutableStateOf<ViewerToolpathSelection?>(null) }
+    var renderedSegmentCount by remember(gcodeFile) { mutableStateOf(0L) }
     val lastLayer = (successfulReport.layers.toInt() - 1).coerceAtLeast(0)
     val sliderEnd = lastLayer.coerceAtLeast(1).toFloat()
-    val visibleMotions = previewData?.motions?.filter { motion ->
-        motion.layer in minimumLayer..maximumLayer &&
-            ((motion.extrusion && showExtrusion) || (!motion.extrusion && showTravel))
-    }.orEmpty()
-    val selectedMotionIndex = if (visibleMotions.isEmpty()) {
-        0
-    } else {
-        (visibleMotions.lastIndex * progress.coerceIn(0f, 1f)).roundToInt().coerceIn(0, visibleMotions.lastIndex)
-    }
-    val displayedSegmentCount = toolpathSelection?.displayedSegmentCount
-        ?: if (visibleMotions.isEmpty()) 0 else selectedMotionIndex + 1
-    val eligibleSegmentCount = toolpathSelection?.eligibleSegmentCount ?: visibleMotions.size
-    val maximumLayerZ = previewData?.layerZ(maximumLayer)
-        ?: (maximumLayer + 1) * layerHeightMm
-    val minimumLayerZ = previewData?.layerZ(minimumLayer)
-        ?: (minimumLayer + 1) * layerHeightMm
+    val displayedSegmentCount = toolpathSelection?.displayedSegmentCount ?: 0
+    val eligibleSegmentCount = toolpathSelection?.eligibleSegmentCount ?: 0
+    val maximumLayerZ = toolpathSelection?.maximumLayerZ ?: (maximumLayer + 1) * layerHeightMm
+    val minimumLayerZ = toolpathSelection?.minimumLayerZ ?: (minimumLayer + 1) * layerHeightMm
 
     Card(
         colors = CardDefaults.cardColors(containerColor = Surface),
         shape = RoundedCornerShape(22.dp),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(ModelSliceResultTestTag),
     ) {
         Column(
             modifier = Modifier.padding(10.dp),
@@ -3764,17 +4137,25 @@ private fun OrcaSliceWorkspace(
                     toolpathProgress = progress,
                     showExtrusion = showExtrusion,
                     showTravel = showTravel,
+                    includeToolpathCommands = gcodeExpanded,
                     cameraResetRequest = cameraResetRequest,
                     modelObjects = modelObjects,
                     selectedObjectId = selectedObjectId,
                     onObjectSelected = onObjectSelected,
                     onSceneState = onSceneState,
+                    onToolpathRendered = { segmentCount ->
+                        renderedSegmentCount = segmentCount.toLong()
+                    },
                     onToolpathSelection = { toolpathSelection = it },
                     onError = onViewerError,
                     viewerHeight = 410.dp,
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight(),
+                        .fillMaxHeight()
+                        .testTag(ModelToolpathViewerTestTag)
+                        .semantics {
+                            renderedToolpathSegments = renderedSegmentCount
+                        },
                 )
                 Column(
                     modifier = Modifier
@@ -3827,11 +4208,11 @@ private fun OrcaSliceWorkspace(
                 value = progress.coerceIn(0f, 1f),
                 onValueChange = onProgressChange,
                 valueRange = 0f..1f,
-                enabled = visibleMotions.isNotEmpty(),
+                enabled = eligibleSegmentCount > 0,
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            toolpathSelection?.let { selection ->
+            toolpathSelection?.takeIf { it.selected }?.let { selection ->
                 val lineWidth = selection.lineWidthMm
                     ?.let { String.format(Locale.US, "%.3f", it) }
                     ?: "—"
@@ -3862,22 +4243,20 @@ private fun OrcaSliceWorkspace(
                 Text(if (gcodeExpanded) "Скрыть команды G-code" else "Показать команды G-code")
             }
             if (gcodeExpanded) {
-                val codeStart = (selectedMotionIndex - 5).coerceAtLeast(0)
-                val codeEnd = (selectedMotionIndex + 6).coerceAtMost(visibleMotions.size)
+                val commands = toolpathSelection?.commands.orEmpty()
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(Color(0xFF202220), RoundedCornerShape(12.dp))
                         .padding(10.dp),
                 ) {
-                    if (visibleMotions.isEmpty()) {
+                    if (commands.isEmpty()) {
                         Text("Нет видимых команд", color = Color(0xFFCDD5D0), fontFamily = FontFamily.Monospace)
                     } else {
-                        visibleMotions.subList(codeStart, codeEnd).forEachIndexed { index, motion ->
-                            val active = codeStart + index == selectedMotionIndex
+                        commands.forEach { command ->
                             Text(
-                                "${motion.lineNumber.toString().padStart(6)}  ${motion.source}",
-                                color = if (active) Color(0xFFFFA15A) else Color(0xFFD6DDD8),
+                                "${command.lineNumber.toString().padStart(6)}  ${command.source}",
+                                color = if (command.active) Color(0xFFFFA15A) else Color(0xFFD6DDD8),
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp,
                                 maxLines = 1,
@@ -3893,7 +4272,7 @@ private fun OrcaSliceWorkspace(
                 fontSize = 12.sp,
             )
             Text(
-                "Прочитано ${previewData?.lineCount ?: 0} строк G-code",
+                "Прочитано ${toolpathSelection?.lineCount ?: 0} строк G-code",
                 color = Muted,
                 fontSize = 11.sp,
             )

@@ -14,7 +14,11 @@ class ViewerToolpathSelectionTest {
               "selected": true,
               "displayedSegmentCount": 8,
               "eligibleSegmentCount": 14,
+              "lineCount": 120,
+              "minimumLayerZ": 0.6,
+              "maximumLayerZ": 0.8,
               "layer": 3,
+              "lineNumber": 84,
               "x": 103.95,
               "y": 134.82,
               "z": 0.8,
@@ -23,15 +27,24 @@ class ViewerToolpathSelectionTest {
               "lineType": "outerWall",
               "lineTypeLabel": "Outer wall",
               "lineWidth": 0.46,
-              "layerHeight": 0.2
+              "layerHeight": 0.2,
+              "commands": [
+                {"lineNumber": 83, "source": "G0 X100 Y130", "active": false},
+                {"lineNumber": 84, "source": "G1 X103.95 Y134.82 E0.1", "active": true}
+              ]
             }
             """.trimIndent(),
         )
 
         requireNotNull(selection)
+        assertEquals(true, selection.selected)
         assertEquals(8, selection.displayedSegmentCount)
         assertEquals(14, selection.eligibleSegmentCount)
+        assertEquals(120, selection.lineCount)
+        assertEquals(0.6, selection.minimumLayerZ!!, 0.000001)
+        assertEquals(0.8, selection.maximumLayerZ!!, 0.000001)
         assertEquals(3, selection.layer)
+        assertEquals(84, selection.lineNumber)
         assertEquals(103.95, selection.x, 0.000001)
         assertEquals(134.82, selection.y, 0.000001)
         assertEquals(0.8, selection.z, 0.000001)
@@ -41,6 +54,9 @@ class ViewerToolpathSelectionTest {
         assertEquals("Outer wall", selection.lineTypeLabel)
         assertEquals(0.46, selection.lineWidthMm!!, 0.000001)
         assertEquals(0.2, selection.layerHeightMm!!, 0.000001)
+        assertEquals(2, selection.commands.size)
+        assertEquals("G1 X103.95 Y134.82 E0.1", selection.commands[1].source)
+        assertEquals(true, selection.commands[1].active)
     }
 
     @Test
@@ -71,11 +87,14 @@ class ViewerToolpathSelectionTest {
     }
 
     @Test
-    fun noVisibleSegmentClearsSelection() {
-        assertNull(
-            parseViewerToolpathSelection(
-                """{"selected":false,"displayedSegmentCount":0,"eligibleSegmentCount":0}""",
-            ),
+    fun noVisibleSegmentPreservesLightweightSummary() {
+        val selection = parseViewerToolpathSelection(
+            """{"selected":false,"displayedSegmentCount":0,"eligibleSegmentCount":0,"lineCount":42}""",
         )
+
+        requireNotNull(selection)
+        assertEquals(false, selection.selected)
+        assertEquals(42, selection.lineCount)
+        assertEquals(0, selection.commands.size)
     }
 }

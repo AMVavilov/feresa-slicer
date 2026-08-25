@@ -1,0 +1,4 @@
+• Fixed a crash caused by high memory use after slicing larger models.
+• Added repeated slicing and real Model-screen release regression tests.
+• Improved G-code toolpath rendering and 3D preview stability.
+• Improved print-setting and filament-profile reliability.

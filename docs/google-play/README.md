@@ -3,7 +3,13 @@
 This directory contains the project-side material for the Russian and English
 Google Play listing. Play Console remains the source of truth for policy forms.
 
-Target release: `0.16.0-alpha.1` (`versionCode` 31).
+Before every upload or track promotion, run and record the reusable
+[Pre-Play release testing](pre-release-testing.md) gate. Checked build and
+console items below are historical facts about version code 31; they do not
+replace a fresh test report, the documented manual matrix, Play-delivered
+testing, or human authorization for the exact signed artifacts.
+
+Target release: `0.16.0-alpha.2` (`versionCode` 32).
 
 ## Release gates
 
@@ -14,7 +20,8 @@ Target release: `0.16.0-alpha.1` (`versionCode` 31).
 - [x] Privacy policy and Data safety draft prepared.
 - [x] Ads declaration: no ads.
 - [x] Only the `INTERNET` permission is requested.
-- [x] Viewer test suite passed: 32/32 tests.
+- [x] Viewer test suite passed (retain the command output as evidence; do not
+  hard-code the changing test count here).
 - [x] JVM unit tests passed.
 - [x] `lintRelease` passed.
 - [x] 512×512 icon, 1024×500 feature graphic, and four current phone
@@ -29,14 +36,23 @@ Target release: `0.16.0-alpha.1` (`versionCode` 31).
 - [x] Build the final upload-signed `app-release.aab` and APK, run
       `scripts/verify-16kb-aab.sh`, and record their SHA-256 values and sizes in
       `verification.md`.
-- [x] Upload the final signed `app-release.aab`.
+- [x] Historical only: version code 31's signed `app-release.aab` was submitted
+      before the hardened two-device gate was adopted. This is not evidence of
+      a current automated or human approval.
 - [x] Upload the prepared localized text and graphics from `fastlane/metadata`.
 - [x] Complete App content declarations using `app-content.md` and
       `data-safety.md`.
+- [ ] Run the hardened automated gate from a clean commit on distinct ARM64
+      4 KiB and 16 KiB targets and retain both instrumentation and exact-signed
+      APK launch-smoke evidence.
+- [ ] Complete and link the manual release matrix for the exact signed APK.
 - [ ] Run internal testing, followed by closed testing if required for the
       developer account.
-- [ ] Test the Play-delivered build on at least one ARM64 physical phone and a
-      real printer before production rollout.
+- [ ] Test the Play-delivered build on the documented device matrix, including
+      at least one ARM64 physical phone and a real printer before production
+      rollout.
+- [ ] Record human upload/promotion authorization only after the automated,
+      manual, and Play-delivered stages are complete.
 
 ## Current policy baseline (August 21, 2026)
 

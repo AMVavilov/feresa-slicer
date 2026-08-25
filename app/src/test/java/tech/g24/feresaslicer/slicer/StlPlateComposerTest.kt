@@ -160,6 +160,88 @@ class StlPlateComposerTest {
         assertEquals(70.710678, orientation.supportingFaceAreaMm2, 0.0001)
     }
 
+    @Test
+    fun basicAutoOrientationGroupsCoplanarFacesAndPrefersLowStableBase() {
+        val directory = Files.createTempDirectory("feresa-stl-auto-orient").toFile()
+        val model = subdividedBox(directory, "box.stl", width = 20.0, depth = 10.0, height = 5.0)
+
+        val orientation = requireNotNull(
+            StlPlateComposer.suggestBasicAutoOrientation(
+                file = model,
+                bedWidthMm = 100.0,
+                bedDepthMm = 100.0,
+                maximumHeightMm = 100.0,
+            ),
+        )
+        val repeated = requireNotNull(
+            StlPlateComposer.suggestBasicAutoOrientation(
+                file = model,
+                bedWidthMm = 100.0,
+                bedDepthMm = 100.0,
+                maximumHeightMm = 100.0,
+            ),
+        )
+
+        assertEquals(orientation, repeated)
+        assertEquals(5.0, orientation.resultingHeightMm, 0.0001)
+        assertEquals(200.0, orientation.contactHullAreaMm2, 0.0001)
+        assertEquals(0.0, orientation.estimatedUnsupportedAreaMm2, 0.0001)
+        assertEquals(0.0, orientation.positionZmm, 0.0001)
+
+        val autoOutput = File(directory, "auto.stl")
+        val autoBounds = StlPlateComposer.compose(
+            listOf(
+                StlPlatePlacement(
+                    file = model,
+                    positionXmm = 50.0,
+                    positionYmm = 50.0,
+                    positionZmm = orientation.positionZmm,
+                    rotationXDegrees = orientation.rotationXDegrees,
+                    rotationYDegrees = orientation.rotationYDegrees,
+                    rotationDegrees = orientation.rotationZDegrees,
+                ),
+            ),
+            autoOutput,
+        ).bounds
+        assertEquals(0.0, autoBounds.minimumZ, 0.0001)
+        assertEquals(orientation.resultingHeightMm, autoBounds.height, 0.0001)
+
+        // The biggest individual triangle belongs to a long side (50 mm2). The basic auto-
+        // orientation instead groups the subdivided 200 mm2 base and keeps the box only 5 mm tall.
+        val largestFace = requireNotNull(StlPlateComposer.suggestLayFlat(model))
+        val largestFaceOutput = File(directory, "largest-face.stl")
+        val largestFaceHeight = StlPlateComposer.compose(
+            listOf(
+                StlPlatePlacement(
+                    file = model,
+                    positionXmm = 50.0,
+                    positionYmm = 50.0,
+                    positionZmm = largestFace.positionZmm,
+                    rotationXDegrees = largestFace.rotationXDegrees,
+                    rotationYDegrees = largestFace.rotationYDegrees,
+                    rotationDegrees = largestFace.rotationZDegrees,
+                ),
+            ),
+            largestFaceOutput,
+        ).bounds.height
+        assertTrue(largestFaceHeight > orientation.resultingHeightMm)
+    }
+
+    @Test
+    fun basicAutoOrientationRejectsEveryCandidateOutsideBuildVolume() {
+        val directory = Files.createTempDirectory("feresa-stl-auto-orient-fit").toFile()
+        val model = subdividedBox(directory, "box.stl", width = 20.0, depth = 10.0, height = 5.0)
+
+        val result = StlPlateComposer.suggestBasicAutoOrientation(
+            file = model,
+            bedWidthMm = 15.0,
+            bedDepthMm = 15.0,
+            maximumHeightMm = 10.0,
+        )
+
+        assertEquals(null, result)
+    }
+
     private fun asciiTriangle(directory: File, name: String, size: Double, height: Double): File =
         File(directory, name).apply {
             writeText(
@@ -176,4 +258,58 @@ class StlPlateComposerTest {
                 """.trimIndent(),
             )
         }
+
+    private fun subdividedBox(
+        directory: File,
+        name: String,
+        width: Double,
+        depth: Double,
+        height: Double,
+    ): File {
+        data class TestVertex(val x: Double, val y: Double, val z: Double)
+
+        val triangles = ArrayList<List<TestVertex>>()
+        fun triangle(first: TestVertex, second: TestVertex, third: TestVertex) {
+            triangles += listOf(first, second, third)
+        }
+
+        // Split the horizontal surfaces so their aggregate normal area, rather than one large
+        // triangle, has to win against the two-triangle long sides.
+        val horizontalSections = 4
+        repeat(horizontalSections) { index ->
+            val x0 = width * index / horizontalSections
+            val x1 = width * (index + 1) / horizontalSections
+            triangle(TestVertex(x0, 0.0, 0.0), TestVertex(x1, depth, 0.0), TestVertex(x1, 0.0, 0.0))
+            triangle(TestVertex(x0, 0.0, 0.0), TestVertex(x0, depth, 0.0), TestVertex(x1, depth, 0.0))
+            triangle(TestVertex(x0, 0.0, height), TestVertex(x1, 0.0, height), TestVertex(x1, depth, height))
+            triangle(TestVertex(x0, 0.0, height), TestVertex(x1, depth, height), TestVertex(x0, depth, height))
+        }
+
+        triangle(TestVertex(0.0, 0.0, 0.0), TestVertex(width, 0.0, 0.0), TestVertex(width, 0.0, height))
+        triangle(TestVertex(0.0, 0.0, 0.0), TestVertex(width, 0.0, height), TestVertex(0.0, 0.0, height))
+        triangle(TestVertex(0.0, depth, 0.0), TestVertex(width, depth, height), TestVertex(width, depth, 0.0))
+        triangle(TestVertex(0.0, depth, 0.0), TestVertex(0.0, depth, height), TestVertex(width, depth, height))
+        triangle(TestVertex(0.0, 0.0, 0.0), TestVertex(0.0, 0.0, height), TestVertex(0.0, depth, height))
+        triangle(TestVertex(0.0, 0.0, 0.0), TestVertex(0.0, depth, height), TestVertex(0.0, depth, 0.0))
+        triangle(TestVertex(width, 0.0, 0.0), TestVertex(width, depth, height), TestVertex(width, 0.0, height))
+        triangle(TestVertex(width, 0.0, 0.0), TestVertex(width, depth, 0.0), TestVertex(width, depth, height))
+
+        return File(directory, name).apply {
+            writeText(
+                buildString {
+                    appendLine("solid box")
+                    triangles.forEach { vertices ->
+                        appendLine("  facet normal 0 0 0")
+                        appendLine("    outer loop")
+                        vertices.forEach { vertex ->
+                            appendLine("      vertex ${vertex.x} ${vertex.y} ${vertex.z}")
+                        }
+                        appendLine("    endloop")
+                        appendLine("  endfacet")
+                    }
+                    appendLine("endsolid box")
+                },
+            )
+        }
+    }
 }

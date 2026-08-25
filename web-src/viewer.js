@@ -22,6 +22,7 @@ import {
 import {
     cameraDistanceToFrameSphere,
     createCameraViewPreference,
+    normalizeCameraViewPreset,
 } from "./camera-view.mjs";
 
 const canvas = document.getElementById("scene");
@@ -37,7 +38,7 @@ const viewerText = {
         loadingModel: "Загрузка STL…",
         loadingModels: "Загрузка STL-моделей…",
         gestureHint: "Проведите для вращения · сведите пальцы для масштаба",
-        resetCamera: "Сбросить вид",
+        fitScene: "Вписать сцену",
         previewUnavailable: "3D-просмотр недоступен. Числовые настройки положения остаются доступны.",
         noVisibleToolpaths: "Нет видимых траекторий",
         loadingGcode: "Загрузка просмотра G-code…",
@@ -52,7 +53,7 @@ const viewerText = {
         loadingModel: "Loading STL…",
         loadingModels: "Loading STL models…",
         gestureHint: "Drag to rotate · pinch to zoom",
-        resetCamera: "Reset view",
+        fitScene: "Fit scene",
         previewUnavailable: "3D preview is unavailable. Numeric placement controls remain available.",
         noVisibleToolpaths: "No visible toolpaths",
         loadingGcode: "Loading G-code preview…",
@@ -65,7 +66,7 @@ const viewerText = {
 }[viewerLanguage];
 
 statusElement.textContent = viewerText.waitingModel;
-resetButton.textContent = viewerText.resetCamera;
+resetButton.textContent = viewerText.fitScene;
 fallbackElement.textContent = viewerText.previewUnavailable;
 
 let renderer;
@@ -75,6 +76,10 @@ const modelObjects = new Map();
 let selectedObjectId = null;
 let toolpathLines = null;
 let toolpathData = null;
+let toolpathSource = null;
+let toolpathLineStarts = null;
+let toolpathVersion = null;
+let toolpathCommandSourceGeneration = 0;
 let toolpathSegmentCount = 0;
 let toolpathEligibleSegmentCount = 0;
 const modelRequestGate = createLatestRequestGate();
@@ -86,6 +91,13 @@ let bedGroup = null;
 let renderQueued = false;
 let cameraTransitionFrame = null;
 let cameraTransitionGeneration = 0;
+let activeCameraPreset = null;
+let cameraGestureActive = false;
+let cameraGestureMoved = false;
+let cameraMutationRevision = 0;
+let modelLoadInProgress = false;
+let pendingObjectSelection;
+const pendingObjectTransforms = new Map();
 let darkTheme = queryParams.get("theme") === "dark";
 const toolpathPreview = {
     minimumLayer: 0,
@@ -94,6 +106,7 @@ const toolpathPreview = {
     maximumSegmentRatio: 1,
     showExtrusion: true,
     showTravel: false,
+    includeCommands: false,
 };
 
 const transformState = {
@@ -159,7 +172,9 @@ function initRenderer() {
     controls.maxDistance = 1200;
     controls.minPolarAngle = 0;
     controls.maxPolarAngle = Math.PI;
-    controls.addEventListener("change", requestRender);
+    controls.addEventListener("start", onCameraControlsStart);
+    controls.addEventListener("change", onCameraControlsChange);
+    controls.addEventListener("end", onCameraControlsEnd);
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x718078, 2.3));
     const keyLight = new THREE.DirectionalLight(0xffffff, 2.2);
@@ -168,7 +183,7 @@ function initRenderer() {
 
     rebuildBed();
     resize();
-    resetCamera();
+    resetCamera({ notify: false, trackChange: false });
     return true;
 }
 
@@ -213,15 +228,19 @@ function rebuildBed() {
     requestRender();
 }
 
-function resetCamera() {
+function resetCamera(options = {}) {
     if (!camera || !controls) return;
     cancelCameraTransition();
+    if (options.trackChange !== false) cameraMutationRevision += 1;
+    if (options.preserveCameraMode !== true) activeCameraPreset = null;
     const span = Math.max(bedWidth, bedDepth);
     camera.position.set(span * 0.72, span * 0.62, span * 0.82);
     camera.up.set(0, 1, 0);
     controls.target.set(0, 12, 0);
     controls.update();
     requestRender();
+    if (options.notify !== false) reportCameraState(options.source ?? "reset", false);
+    return true;
 }
 
 function visibleModelRecords() {
@@ -239,29 +258,92 @@ function modelBounds() {
     return hasBounds && !bounds.isEmpty() ? bounds : null;
 }
 
-function frameAll() {
-    if (!camera || !controls) return;
+function selectedModelBounds() {
+    const record = selectedObjectId == null ? null : modelObjects.get(selectedObjectId);
+    if (!record?.visible) return null;
+    record.group.updateMatrixWorld(true);
+    const bounds = new THREE.Box3().setFromObject(record.group);
+    return bounds.isEmpty() ? null : bounds;
+}
+
+function printBedBounds() {
+    return new THREE.Box3(
+        new THREE.Vector3(-bedWidth / 2, -0.2, -bedDepth / 2),
+        new THREE.Vector3(bedWidth / 2, 0.2, bedDepth / 2),
+    );
+}
+
+function currentCameraDirection() {
+    const direction = camera.position.clone().sub(controls.target);
+    if (direction.lengthSq() <= 1e-12) direction.set(1, 0.82, 1.16);
+    return direction.normalize();
+}
+
+function frameBounds(bounds, options = {}) {
+    if (!camera || !controls || !bounds || bounds.isEmpty()) return false;
     cancelCameraTransition();
-    const bounds = modelBounds();
-    if (!bounds) {
-        resetCamera();
-        return;
-    }
-    const size = bounds.getSize(new THREE.Vector3());
+    if (options.trackChange !== false) cameraMutationRevision += 1;
     const center = bounds.getCenter(new THREE.Vector3());
-    const maximumDimension = Math.max(size.x, size.y, size.z, 10);
-    const verticalDistance = maximumDimension /
-        (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5)));
-    const horizontalDistance = verticalDistance / Math.max(camera.aspect, 0.25);
-    const distance = Math.max(verticalDistance, horizontalDistance) * 1.45;
-    const direction = new THREE.Vector3(1, 0.82, 1.16).normalize();
-    camera.position.copy(center).addScaledVector(direction, distance);
+    const radius = Math.max(
+        bounds.getBoundingSphere(new THREE.Sphere()).radius,
+        controls.minDistance * 0.05,
+    );
+    const distance = Math.max(
+        controls.minDistance,
+        cameraDistanceToFrameSphere({
+            radius,
+            verticalFovDegrees: camera.fov,
+            aspect: camera.aspect,
+            margin: options.margin ?? 1.18,
+        }),
+    );
+    const direction = options.direction
+        ? new THREE.Vector3(...options.direction).normalize()
+        : currentCameraDirection();
+    const position = center.clone().addScaledVector(direction, distance);
+    const up = camera.up.clone().normalize();
     camera.near = Math.max(0.1, distance / 1000);
     camera.far = Math.max(3000, distance * 20);
     camera.updateProjectionMatrix();
-    controls.target.copy(center);
-    controls.update();
-    requestRender();
+    controls.maxDistance = Math.max(1200, distance * 1.25);
+    if (options.preserveCameraMode !== true) activeCameraPreset = null;
+    finishCameraView(position, center, up, {
+        notify: options.notify,
+        source: options.source ?? "fit",
+    });
+    return true;
+}
+
+/** Fits every visible model while preserving the current viewing direction. */
+function fitModels(options = {}) {
+    return frameBounds(modelBounds(), {
+        ...options,
+        source: options.source ?? "fit-models",
+    });
+}
+
+/** Fits the selected model; returns false without changing the camera if none is selected. */
+function fitSelectedModel(options = {}) {
+    return frameBounds(selectedModelBounds(), {
+        ...options,
+        source: options.source ?? "fit-selected-model",
+    });
+}
+
+/** Fits the complete configured print bed while preserving the current viewing direction. */
+function showWholeBed(options = {}) {
+    return frameBounds(printBedBounds(), {
+        ...options,
+        source: options.source ?? "show-whole-bed",
+    });
+}
+
+/** Backward-compatible fit-all command: models first, then the empty print bed. */
+function frameAll(options = {}) {
+    return fitModels(options) || showWholeBed({
+        ...options,
+        source: options.source ?? "show-whole-bed",
+    });
 }
 
 function activeViewBounds() {
@@ -271,10 +353,7 @@ function activeViewBounds() {
     }
     const bounds = modelBounds();
     if (bounds) return bounds;
-    return new THREE.Box3(
-        new THREE.Vector3(-bedWidth / 2, 0, -bedDepth / 2),
-        new THREE.Vector3(bedWidth / 2, 0, bedDepth / 2),
-    );
+    return printBedBounds();
 }
 
 function cameraFramingRadius(bounds, target) {
@@ -289,7 +368,94 @@ function cancelCameraTransition() {
     if (controls) controls.enabled = true;
 }
 
-function finishCameraView(position, target, up) {
+function cameraStateSnapshot(source = "api", interactionActive = false) {
+    if (!camera || !controls) return null;
+    return {
+        version: 1,
+        position: camera.position.toArray(),
+        target: controls.target.toArray(),
+        up: camera.up.toArray(),
+        fieldOfViewDegrees: camera.fov,
+        mode: activeCameraPreset == null ? "free" : "preset",
+        preset: activeCameraPreset,
+        source: String(source || "api"),
+        interactionActive: Boolean(interactionActive),
+    };
+}
+
+function reportCameraState(source = "api", interactionActive = false) {
+    const payload = cameraStateSnapshot(source, interactionActive);
+    if (payload && window.AndroidBridge?.onCameraState) {
+        window.AndroidBridge.onCameraState(JSON.stringify(payload));
+    }
+    return payload;
+}
+
+function cameraVectorFromState(source, name) {
+    const value = source?.[name];
+    if (!Array.isArray(value) || value.length !== 3) {
+        throw new TypeError(`Camera ${name} must contain three coordinates`);
+    }
+    const coordinates = value.map(Number);
+    if (!coordinates.every(Number.isFinite)) {
+        throw new TypeError(`Camera ${name} coordinates must be finite`);
+    }
+    return new THREE.Vector3(...coordinates);
+}
+
+function normalizeRestorableCameraState(input) {
+    const source = typeof input === "string" ? JSON.parse(input) : input;
+    if (!source || typeof source !== "object") {
+        throw new TypeError("Camera state must be an object");
+    }
+    const position = cameraVectorFromState(source, "position");
+    const target = cameraVectorFromState(source, "target");
+    const up = cameraVectorFromState(source, "up");
+    const direction = target.clone().sub(position);
+    if (direction.lengthSq() <= 1e-12) {
+        throw new RangeError("Camera position and target must be different");
+    }
+    if (up.lengthSq() <= 1e-12 || direction.clone().cross(up).lengthSq() <= 1e-12) {
+        throw new RangeError("Camera up vector must be non-zero and non-collinear");
+    }
+    const fieldOfViewDegrees = Number(source.fieldOfViewDegrees ?? 38);
+    if (!Number.isFinite(fieldOfViewDegrees) || fieldOfViewDegrees < 1 || fieldOfViewDegrees > 179) {
+        throw new RangeError("Camera field of view must be between 1 and 179 degrees");
+    }
+    const mode = source.mode === "preset" ? "preset" : "free";
+    const preset = mode === "preset" ? normalizeCameraViewPreset(source.preset) : null;
+    return { position, target, up: up.normalize(), fieldOfViewDegrees, mode, preset };
+}
+
+/** Restores an exact camera snapshot without reloading scene resources. */
+function restoreCameraState(input, options = {}) {
+    if (!camera || !controls) return false;
+    try {
+        const state = normalizeRestorableCameraState(input);
+        cancelCameraTransition();
+        if (options.trackChange !== false) cameraMutationRevision += 1;
+        activeCameraPreset = state.preset;
+        if (state.preset != null) cameraViewPreference.select(state.preset);
+        camera.position.copy(state.position);
+        camera.up.copy(state.up);
+        camera.fov = state.fieldOfViewDegrees;
+        controls.target.copy(state.target);
+        const distance = camera.position.distanceTo(controls.target);
+        camera.near = Math.max(0.1, distance / 1000);
+        camera.far = Math.max(3000, distance * 20);
+        camera.updateProjectionMatrix();
+        controls.maxDistance = Math.max(1200, distance * 1.25);
+        controls.update();
+        requestRender();
+        if (options.notify !== false) reportCameraState(options.source ?? "restore", false);
+        return true;
+    } catch (error) {
+        reportError(error.message || "Cannot restore camera state");
+        return false;
+    }
+}
+
+function finishCameraView(position, target, up, options = {}) {
     camera.position.copy(position);
     camera.up.copy(up);
     controls.target.copy(target);
@@ -298,6 +464,7 @@ function finishCameraView(position, target, up) {
     controls.enabled = true;
     cameraTransitionFrame = null;
     requestRender();
+    if (options.notify !== false) reportCameraState(options.source ?? "api", false);
 }
 
 /**
@@ -328,7 +495,7 @@ function applyCameraViewDefinition(definition, options = {}) {
     const durationMs = Math.max(0, Number(options.durationMs ?? 320) || 0);
     cancelCameraTransition();
     if (durationMs === 0) {
-        finishCameraView(destination, target, up);
+        finishCameraView(destination, target, up, options);
         return true;
     }
 
@@ -353,7 +520,7 @@ function applyCameraViewDefinition(definition, options = {}) {
         if (progress < 1) {
             cameraTransitionFrame = requestAnimationFrame(animateCamera);
         } else {
-            finishCameraView(destination, target, up);
+            finishCameraView(destination, target, up, options);
         }
     };
     cameraTransitionFrame = requestAnimationFrame(animateCamera);
@@ -361,14 +528,68 @@ function applyCameraViewDefinition(definition, options = {}) {
 }
 
 function setCameraView(preset, options = {}) {
-    return applyCameraViewDefinition(cameraViewPreference.select(preset), options);
+    const definition = cameraViewPreference.select(preset);
+    if (options.trackChange !== false) cameraMutationRevision += 1;
+    activeCameraPreset = definition.preset;
+    return applyCameraViewDefinition(definition, {
+        ...options,
+        source: options.source ?? "preset",
+    });
 }
 
-function restoreCameraViewAfterFraming() {
+function restoreCameraViewAfterFraming(options = {}) {
+    if (activeCameraPreset == null) return false;
     const definition = cameraViewPreference.current();
-    if (definition.preset !== "isometric") {
-        applyCameraViewDefinition(definition, { durationMs: 0 });
+    return applyCameraViewDefinition(definition, {
+        ...options,
+        durationMs: 0,
+        source: options.source ?? "preset",
+    });
+}
+
+function settleCameraAfterSceneChange(
+    restoredState = null,
+    shouldFrame = true,
+    expectedCameraRevision = null,
+) {
+    if (expectedCameraRevision != null && cameraMutationRevision !== expectedCameraRevision) {
+        reportCameraState("scene-command-preserved", false);
+        return false;
     }
+    if (shouldFrame) {
+        frameAll({
+            notify: false,
+            preserveCameraMode: true,
+            source: "scene",
+            trackChange: false,
+        });
+    }
+    if (restoredState != null) {
+        return restoreCameraState(restoredState, { source: "restore", trackChange: false });
+    }
+    if (restoreCameraViewAfterFraming({ source: "preset", trackChange: false })) return true;
+    reportCameraState("scene", false);
+    return true;
+}
+
+function onCameraControlsStart() {
+    cameraGestureActive = true;
+    cameraGestureMoved = false;
+}
+
+function onCameraControlsChange() {
+    requestRender();
+    if (!cameraGestureActive || cameraGestureMoved) return;
+    cameraGestureMoved = true;
+    cameraMutationRevision += 1;
+    activeCameraPreset = null;
+    reportCameraState("manual", true);
+}
+
+function onCameraControlsEnd() {
+    if (cameraGestureMoved) reportCameraState("manual", false);
+    cameraGestureActive = false;
+    cameraGestureMoved = false;
 }
 
 function transformGeometryFromStl(geometry) {
@@ -432,14 +653,16 @@ function disposeLoadedModels() {
 
 function clearModels() {
     modelRequestGate.invalidate();
+    modelLoadInProgress = false;
+    pendingObjectSelection = undefined;
+    pendingObjectTransforms.clear();
     disposeLoadedModels();
     clearToolpath();
     setViewMode("model");
     reportObjectSelection(null, "api");
     statusElement.style.color = "#4f5852";
     statusElement.textContent = viewerText.waitingModel;
-    frameAll();
-    restoreCameraViewAfterFraming();
+    settleCameraAfterSceneChange();
 }
 
 function modelRequestUrl(url, version) {
@@ -451,9 +674,21 @@ function modelRequestUrl(url, version) {
     return resolved.href;
 }
 
-async function loadModels(input) {
+async function loadModels(input, initialCameraState = null) {
     const payload = normalizeModelObjectsPayload(input, transformState);
+    const payloadObjectIds = new Set(payload.objects.map((descriptor) => descriptor.objectId));
+    for (const objectId of pendingObjectTransforms.keys()) {
+        if (!payloadObjectIds.has(objectId)) pendingObjectTransforms.delete(objectId);
+    }
+    if (
+        pendingObjectSelection != null &&
+        !payloadObjectIds.has(String(pendingObjectSelection))
+    ) {
+        pendingObjectSelection = undefined;
+    }
+    const cameraRevisionAtLoadStart = cameraMutationRevision;
     const requestToken = modelRequestGate.begin();
+    modelLoadInProgress = true;
     clearToolpath();
     setViewMode("model");
     statusElement.style.color = "#4f5852";
@@ -465,9 +700,15 @@ async function loadModels(input) {
 
     if (payload.objects.length === 0) {
         disposeLoadedModels();
+        modelLoadInProgress = false;
+        pendingObjectSelection = undefined;
+        pendingObjectTransforms.clear();
         reportObjectSelection(null, "api");
-        frameAll();
-        restoreCameraViewAfterFraming();
+        settleCameraAfterSceneChange(
+            initialCameraState,
+            payload.frameAll,
+            cameraRevisionAtLoadStart,
+        );
         return;
     }
 
@@ -484,35 +725,54 @@ async function loadModels(input) {
         const loadedRecords = payload.objects.map((descriptor, index) => {
             const geometry = new STLLoader().parse(buffers[index]);
             transformGeometryFromStl(geometry);
-            return createModelRecord(descriptor, geometry);
+            const pendingTransform = pendingObjectTransforms.get(descriptor.objectId);
+            return createModelRecord(
+                pendingTransform == null
+                    ? descriptor
+                    : {
+                        ...descriptor,
+                        transform: normalizeModelTransform(pendingTransform, descriptor.transform),
+                    },
+                geometry,
+            );
         });
 
+        const requestedSelection = pendingObjectSelection !== undefined
+            ? pendingObjectSelection
+            : payload.selectedObjectId;
         disposeLoadedModels();
         for (const record of loadedRecords) {
             modelObjects.set(record.objectId, record);
             scene.add(record.group);
             applyObjectTransform(record, record.transform, false);
+            pendingObjectTransforms.delete(record.objectId);
         }
+        modelLoadInProgress = false;
+        pendingObjectSelection = undefined;
         setViewMode(viewMode);
-        selectObject(payload.selectedObjectId, true, "api");
+        selectObject(requestedSelection, true, "api");
         reportSceneState(true);
-        if (payload.frameAll) {
-            frameAll();
-            restoreCameraViewAfterFraming();
-        }
+        settleCameraAfterSceneChange(
+            initialCameraState,
+            payload.frameAll,
+            cameraRevisionAtLoadStart,
+        );
         statusElement.textContent = payload.objects.length > 1
             ? `${payload.objects.length} ${viewerText.models}`
             : viewerText.gestureHint;
         requestRender();
     } catch (error) {
         if (!modelRequestGate.isCurrent(requestToken)) return;
+        modelLoadInProgress = false;
+        pendingObjectSelection = undefined;
+        for (const objectId of payloadObjectIds) pendingObjectTransforms.delete(objectId);
         disposeLoadedModels();
         reportObjectSelection(null, "api");
         reportError(error.message || "Cannot display STL model");
     }
 }
 
-async function loadModel(version = Date.now()) {
+async function loadModel(version = Date.now(), initialCameraState = null) {
     return loadModels({
         version,
         objects: [{
@@ -522,7 +782,7 @@ async function loadModel(version = Date.now()) {
         }],
         selectedObjectId: LEGACY_OBJECT_ID,
         frameAll: true,
-    });
+    }, initialCameraState);
 }
 
 function applyObjectTransform(record, transform, notify = true) {
@@ -608,9 +868,16 @@ function reportObjectSelection(objectId, source) {
 }
 
 function selectObject(objectId, notify = true, source = "api") {
-    const normalizedObjectId = objectId != null && modelObjects.has(String(objectId))
-        ? String(objectId)
-        : null;
+    const requestedObjectId = objectId == null ? null : String(objectId);
+    if (modelLoadInProgress) pendingObjectSelection = requestedObjectId;
+    if (requestedObjectId != null && !modelObjects.has(requestedObjectId)) {
+        // Compose can issue selection while the matching STL fetch is still in flight. Keep the
+        // latest request and apply it atomically when that scene commits instead of reporting a
+        // transient unknown-object error or selecting the wrong model.
+        pendingObjectSelection = requestedObjectId;
+        return requestedObjectId;
+    }
+    const normalizedObjectId = requestedObjectId;
     const changed = selectedObjectId !== normalizedObjectId;
     selectedObjectId = normalizedObjectId;
     for (const record of modelObjects.values()) updateModelAppearance(record);
@@ -620,9 +887,18 @@ function selectObject(objectId, notify = true, source = "api") {
 }
 
 function updateObjectTransform(objectId, payload) {
-    const record = modelObjects.get(String(objectId));
-    if (!record) throw new Error(`Unknown model objectId: ${objectId}`);
+    const normalizedObjectId = String(objectId);
+    const record = modelObjects.get(normalizedObjectId);
+    if (!record) {
+        // Resource loading and Compose effects are intentionally independent. A transform may
+        // arrive before its STL record; queue the latest value so the first rendered frame already
+        // matches the native plate state.
+        pendingObjectTransforms.set(normalizedObjectId, payload);
+        return false;
+    }
+    pendingObjectTransforms.delete(normalizedObjectId);
     applyObjectTransform(record, payload, true);
+    return true;
 }
 
 function updateTransform(payload) {
@@ -663,10 +939,101 @@ function disposeToolpathLines() {
 
 function clearToolpath({ invalidateRequest = true } = {}) {
     if (invalidateRequest) gcodeRequestGate.invalidate();
+    toolpathCommandSourceGeneration += 1;
     toolpathData = null;
+    toolpathSource = null;
+    toolpathLineStarts = null;
+    toolpathVersion = null;
     disposeToolpathLines();
     reportToolpathSelection([], []);
     requestRender();
+}
+
+function indexToolpathSource(source, lineCount) {
+    const count = Math.max(0, Number(lineCount) || 0);
+    const starts = new Uint32Array(count + 1);
+    let nextLine = 1;
+    for (let index = 0; index < source.length && nextLine < count; index += 1) {
+        if (source.charCodeAt(index) !== 10) continue;
+        starts[nextLine] = index + 1;
+        nextLine += 1;
+    }
+    starts[count] = source.length;
+    return starts;
+}
+
+function toolpathSourceLine(lineNumber) {
+    if (!toolpathSource || !toolpathLineStarts) return "";
+    const normalized = Math.trunc(Number(lineNumber));
+    const lineCount = toolpathLineStarts.length - 1;
+    if (!Number.isFinite(normalized) || normalized < 1 || normalized > lineCount) return "";
+    const start = toolpathLineStarts[normalized - 1];
+    let end = toolpathLineStarts[normalized];
+    if (end > start && toolpathSource.charCodeAt(end - 1) === 10) end -= 1;
+    if (end > start && toolpathSource.charCodeAt(end - 1) === 13) end -= 1;
+    return toolpathSource.slice(start, end).trim().slice(0, 180);
+}
+
+function toolpathCommandWindow(eligible, visible) {
+    if (!toolpathPreview.includeCommands || visible.length === 0) return [];
+    const selectedIndex = visible.length - 1;
+    const selectedLineNumber = visible[selectedIndex].lineNumber;
+    const seen = new Set([selectedLineNumber]);
+    const before = [];
+    const after = [];
+
+    for (let index = selectedIndex - 1; index >= 0 && before.length < 5; index -= 1) {
+        const lineNumber = eligible[index].lineNumber;
+        if (seen.has(lineNumber)) continue;
+        seen.add(lineNumber);
+        before.unshift({
+            lineNumber,
+            source: toolpathSourceLine(lineNumber),
+            active: false,
+        });
+    }
+    for (let index = selectedIndex + 1; index < eligible.length && after.length < 5; index += 1) {
+        const lineNumber = eligible[index].lineNumber;
+        if (seen.has(lineNumber)) continue;
+        seen.add(lineNumber);
+        after.push({
+            lineNumber,
+            source: toolpathSourceLine(lineNumber),
+            active: false,
+        });
+    }
+    return [
+        ...before,
+        {
+            lineNumber: selectedLineNumber,
+            source: toolpathSourceLine(selectedLineNumber),
+            active: true,
+        },
+        ...after,
+    ];
+}
+
+async function ensureToolpathCommandSource() {
+    if (!toolpathPreview.includeCommands || toolpathSource || !toolpathData || toolpathVersion == null) return;
+    const generation = ++toolpathCommandSourceGeneration;
+    const expectedData = toolpathData;
+    const version = toolpathVersion;
+    try {
+        const response = await fetch(`../../model/current.gcode?v=${encodeURIComponent(version)}`, { cache: "no-store" });
+        if (!response.ok) return;
+        const source = await response.text();
+        if (
+            generation !== toolpathCommandSourceGeneration ||
+            !toolpathPreview.includeCommands ||
+            toolpathData !== expectedData
+        ) return;
+        toolpathSource = source;
+        toolpathLineStarts = indexToolpathSource(source, expectedData.lineCount);
+        rebuildToolpath();
+    } catch (_) {
+        // Command text is optional. The rendered toolpath remains authoritative
+        // even if a second, on-demand source read fails.
+    }
 }
 
 function positiveValueRange(segments, property) {
@@ -706,7 +1073,10 @@ function segmentColor(segment, maximumSpeed, lineWidthRange, layerHeightRange) {
 function reportToolpathSelection(eligible, visible) {
     if (window.AndroidBridge?.onToolpathSelection) {
         window.AndroidBridge.onToolpathSelection(
-            JSON.stringify(toolpathSelectionPayload(eligible, visible)),
+            JSON.stringify(toolpathSelectionPayload(eligible, visible, {
+                lineCount: toolpathData?.lineCount ?? 0,
+                commands: toolpathCommandWindow(eligible, visible),
+            })),
         );
     }
 }
@@ -721,17 +1091,34 @@ function rebuildToolpath() {
         ...toolpathPreview,
         maximumSegmentRatio: 1,
     });
-    const visible = selectVisibleToolpathSegments(toolpathData.segments, toolpathPreview);
+    const requestedRatio = Number(toolpathPreview.maximumSegmentRatio);
+    const maximumSegmentRatio = Number.isFinite(requestedRatio)
+        ? Math.min(1, Math.max(0, requestedRatio))
+        : 1;
+    const visible = eligible.length === 0 || maximumSegmentRatio >= 1
+        ? eligible
+        : eligible.slice(0, Math.round((eligible.length - 1) * maximumSegmentRatio) + 1);
     reportToolpathSelection(eligible, visible);
     const maximumSpeed = maximumExtrusionSpeed(eligible);
     const lineWidthRange = positiveValueRange(eligible, "lineWidth");
     const layerHeightRange = positiveValueRange(eligible, "layerHeight");
-    const positions = [];
-    const colors = [];
+    // Build the GPU attributes in their final representation. Plain JavaScript number arrays
+    // briefly retain boxed values and Three.js then copies them into Float32Array, which can
+    // double the post-slice peak for large toolpaths and make Android kill the renderer.
+    const positions = new Float32Array(visible.length * 6);
+    const colors = new Float32Array(visible.length * 6);
+    let offset = 0;
     for (const segment of visible) {
-        positions.push(...segment.start, ...segment.end);
+        positions.set(segment.start, offset);
+        positions.set(segment.end, offset + 3);
         const color = segmentColor(segment, maximumSpeed, lineWidthRange, layerHeightRange);
-        colors.push(color.r, color.g, color.b, color.r, color.g, color.b);
+        colors[offset] = color.r;
+        colors[offset + 1] = color.g;
+        colors[offset + 2] = color.b;
+        colors[offset + 3] = color.r;
+        colors[offset + 4] = color.g;
+        colors[offset + 5] = color.b;
+        offset += 6;
     }
     if (positions.length === 0) {
         statusElement.textContent = viewerText.noVisibleToolpaths;
@@ -739,27 +1126,43 @@ function rebuildToolpath() {
         return;
     }
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-    geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     toolpathLines = new THREE.LineSegments(
         geometry,
         new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.94 })
     );
-    toolpathSegmentCount = positions.length / 6;
+    toolpathSegmentCount = visible.length;
     toolpathEligibleSegmentCount = eligible.length;
     scene.add(toolpathLines);
     toolpathLines.visible = viewMode === "toolpath";
     statusElement.textContent = `${toolpathSegmentCount} / ${toolpathEligibleSegmentCount} ${viewerText.segments} · ${viewerText.layers} ${toolpathPreview.minimumLayer + 1}–${Math.min(toolpathPreview.maximumLayer + 1, toolpathData.layerCount)}`;
     requestRender();
+    const renderedLines = toolpathLines;
+    requestAnimationFrame(() => {
+        if (toolpathLines === renderedLines && window.AndroidBridge?.onToolpathRendered) {
+            window.AndroidBridge.onToolpathRendered(toolpathSegmentCount);
+        }
+    });
 }
 
 function setToolpathPreview(payload) {
     Object.assign(toolpathPreview, payload || {});
+    if (!toolpathPreview.includeCommands) {
+        toolpathCommandSourceGeneration += 1;
+        toolpathSource = null;
+        toolpathLineStarts = null;
+    }
     rebuildToolpath();
+    void ensureToolpathCommandSource();
 }
 
 async function loadToolpath(version = Date.now()) {
     const requestToken = gcodeRequestGate.begin();
+    toolpathCommandSourceGeneration += 1;
+    toolpathSource = null;
+    toolpathLineStarts = null;
+    toolpathVersion = null;
     statusElement.textContent = viewerText.loadingGcode;
     try {
         const response = await fetch(`../../model/current.gcode?v=${encodeURIComponent(version)}`, { cache: "no-store" });
@@ -769,6 +1172,14 @@ async function loadToolpath(version = Date.now()) {
         const parsed = parseToolpathDetailed(source, bedWidth, bedDepth);
         if (!parsed.segments.some((segment) => segment.extrusion)) throw new Error("G-code has no extrusion paths");
         toolpathData = parsed;
+        toolpathVersion = version;
+        if (toolpathPreview.includeCommands) {
+            toolpathSource = source;
+            toolpathLineStarts = indexToolpathSource(source, parsed.lineCount);
+        } else {
+            toolpathSource = null;
+            toolpathLineStarts = null;
+        }
         toolpathPreview.minimumLayer = 0;
         toolpathPreview.maximumLayer = Math.max(0, parsed.layerCount - 1);
         rebuildToolpath();
@@ -864,6 +1275,11 @@ window.FeresaSlicerViewer = {
     setViewMode,
     setToolpathPreview,
     setCameraView,
+    getCameraState: cameraStateSnapshot,
+    restoreCameraState,
+    fitModels,
+    fitSelectedModel,
+    showWholeBed,
     frameAll,
     resetCamera,
 };
@@ -877,6 +1293,11 @@ new ResizeObserver(resize).observe(document.body);
 
 if (initRenderer()) {
     setTheme(darkTheme);
+    // Do not publish the temporary reset-camera pose here. Android can already hold a camera
+    // snapshot from the WebView that is being recreated; reporting this bootstrap pose before
+    // loadModels() restores that snapshot would overwrite it. The first authoritative camera
+    // callback is emitted by settleCameraAfterSceneChange() after the scene has either restored
+    // the saved camera or auto-fitted the newly loaded model/bed.
     if (window.AndroidBridge?.onReady) window.AndroidBridge.onReady();
     requestRender();
 }

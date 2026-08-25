@@ -9,7 +9,8 @@ artifact record:
 - minimum Android version: API 28;
 - target and compile SDK: API 36;
 - delivery ABI: `arm64-v8a`;
-- viewer test suite: passed, 32/32 tests;
+- viewer test suite: passed (historical command output retained separately; the
+  changing test count is not hard-coded here);
 - JVM unit tests: passed;
 - `lintRelease`: passed;
 - store assets: four current 1080×2160 phone screenshots prepared for each of
@@ -39,7 +40,7 @@ must be signed with the permanent upload key documented in
 Google Play receives the AAB and produces device-specific APKs through Play App
 Signing.
 
-## Version code 31 verified artifact record
+## Version code 31 artifact record (legacy gate evidence)
 
 The replacement release uses the source-built no-OCCT ARM64 engine based on
 OrcaSlicer Mobile commit
@@ -60,7 +61,7 @@ OrcaSlicer Mobile commit
   - SHA-256: `c7e0b8f1585b95c8239cb248f2b069ff943ceef29d9fde8e139e9f82d10caea1`;
   - size: 68,314,330 bytes.
 
-The following release gates passed:
+The following checks were recorded under the legacy single-device gate:
 
 - the native archive and every engine library match the hashes pinned in
   `scripts/fetch-orca-mobile-engine.sh`;
@@ -72,10 +73,50 @@ The following release gates passed:
 - the signed release APK was cold-started on the official Android 16 KiB system
   image without linker, JNI, or native crash errors.
 
-Version code 31 passed the local release gate. The Play-generated APK should
-also be installed on a supported ARM64 device as a post-publication check.
+This evidence does **not** satisfy the current hardened gate. It lacks a clean
+tree/commit report, a distinct 4 KiB instrumentation run, instrumentation logs
+from both page-size targets, exact signed APK PID/logcat launch-smoke evidence
+from both targets, and the documented manual matrix. The instrumentation test
+APK is also not evidence that the exact upload-signed APK performed an automatic
+slice.
+
+Current audit status for any new upload or promotion based on this record:
+
+- automated gate: `INCOMPLETE`;
+- manual matrix: `REQUIRED`;
+- Play-delivered internal-test matrix: `REQUIRED`;
+- upload/promotion authorization: `INCOMPLETE`.
+
+The Play-generated APK must be tested through the internal-test track and linked
+in the immutable report before a human authorizes any later promotion. It is not
+a post-publication substitute for pre-release evidence.
+
+## August 25, 2026 crash-regression development run
+
+This is development evidence for the new pre-Play suite, not release approval.
+The current sources were copied to a resident non-iCloud test checkout and run on
+the API 36 ARM64 emulator `emulator-5554`, which reported `PAGE_SIZE=4096`:
+
+- viewer JavaScript tests: passed;
+- host native CTest: 1/1 passed;
+- debug and release JVM unit tests: passed;
+- `lintRelease`: passed;
+- debug instrumentation: 15/15 passed, 0 failed/errors/skipped;
+- minified `releaseTest` instrumentation: 15/15 passed, 0 failed/errors/skipped;
+- the new real Model-screen slice action completed, produced non-empty G-code,
+  and the production WebView reported more than 1,000 rendered segments;
+- the repeated production-pipeline memory/native/WebView regression tests passed.
+
+This run remains `INCOMPLETE` for upload because it did not use a second 16 KiB
+target, an exact clean commit, the exact signed APK/AAB, the manual matrix, or the
+Play-delivered internal-test artifact. No Play upload is authorized by this
+section.
 
 ## Google Play submission
+
+This is a historical console event, not proof that the new hardened automated,
+manual, and Play-delivered gates passed and not a precedent for future upload
+approval.
 
 - submitted on August 24, 2026 to the production track as a 100% rollout;
 - Play Console accepted version `31 (0.16.0-alpha.1)`, target SDK 36, and the

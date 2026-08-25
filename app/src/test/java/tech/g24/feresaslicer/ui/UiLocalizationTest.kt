@@ -33,6 +33,18 @@ class UiLocalizationTest {
     }
 
     @Test
+    fun floatingWorkspaceControlsAreFullyLocalized() {
+        assertEquals("View", localizeUiText("Вид", UiLanguage.ENGLISH))
+        assertEquals("Position", localizeUiText("Положение", UiLanguage.ENGLISH))
+        assertEquals("Slice", localizeUiText("Нарезка", UiLanguage.ENGLISH))
+        assertEquals("Arrange", localizeUiText("Расставить", UiLanguage.ENGLISH))
+        assertEquals("Auto orient (beta)", localizeUiText("Автоориент. (бета)", UiLanguage.ENGLISH))
+        assertEquals("Largest face down", localizeUiText("Крупнейшей гранью", UiLanguage.ENGLISH))
+        assertEquals("X position", localizeUiText("Позиция X", UiLanguage.ENGLISH))
+        assertEquals("Place on bed", localizeUiText("На стол", UiLanguage.ENGLISH))
+    }
+
+    @Test
     fun modelPositionStatusAndValidationTextIsFullyLocalized() {
         val insideBed = "Модель находится в пределах стола 220 × 220 мм"
         val bounds = "Границы X -2.5–222.5 · Y 0.0–220.0 · В 18.0 мм"

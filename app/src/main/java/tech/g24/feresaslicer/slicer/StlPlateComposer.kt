@@ -73,6 +73,25 @@ data class StlLayFlatOrientation(
     val supportingFaceAreaMm2: Double,
 )
 
+/**
+ * Result of Feresa's bounded, deterministic auto-orientation heuristic.
+ *
+ * This is intentionally a small Android-friendly heuristic, not OrcaSlicer's full auto-orient
+ * implementation. It compares a limited set of dominant surface normals and axis directions,
+ * preferring less estimated support, a larger bed-contact hull, and a lower result.
+ */
+data class StlAutoOrientationSuggestion(
+    val rotationXDegrees: Double,
+    val rotationYDegrees: Double,
+    val rotationZDegrees: Double,
+    /** Exact correction that moves the lowest transformed mesh vertex to Z=0. */
+    val positionZmm: Double,
+    val estimatedUnsupportedAreaMm2: Double,
+    val contactHullAreaMm2: Double,
+    val resultingHeightMm: Double,
+    val score: Double,
+)
+
 data class StlPlateComposition(
     val file: File,
     val triangleCount: Long,
@@ -206,6 +225,140 @@ object StlPlateComposer {
         )
     }
 
+    /**
+     * Suggests a basic orientation without invoking OrcaSlicer's full auto-orient solver.
+     *
+     * Candidate support directions are formed from the largest normal clusters plus the six
+     * principal axes. Each direction is evaluated at two deterministic bed-plane rotations. A
+     * candidate is rejected when its exact transformed bounds do not fit the requested build
+     * volume. Remaining candidates are ranked by estimated unsupported face area (70%), missing
+     * contact coverage (20%), and resulting height (10%). Bed-contact faces are not counted as
+     * unsupported. Equal candidates prefer the smallest rotation from the source orientation.
+     *
+     * [overhangThresholdDegrees] is measured from the downward build direction: a non-contact
+     * face whose outward normal is within this angle of -Z contributes its complete area to the
+     * support estimate. The returned [StlAutoOrientationSuggestion.positionZmm] is computed from
+     * actual transformed vertices and therefore places the result exactly on Z=0.
+     */
+    fun suggestBasicAutoOrientation(
+        file: File,
+        bedWidthMm: Double,
+        bedDepthMm: Double,
+        maximumHeightMm: Double,
+        overhangThresholdDegrees: Double = 45.0,
+        maximumCandidateNormals: Int = 12,
+        normalClusterToleranceDegrees: Double = 2.0,
+    ): StlAutoOrientationSuggestion? {
+        require(file.isFile) { "STL file does not exist: ${file.path}" }
+        require(bedWidthMm.isFinite() && bedWidthMm > 0.0) {
+            "Bed width must be finite and greater than zero"
+        }
+        require(bedDepthMm.isFinite() && bedDepthMm > 0.0) {
+            "Bed depth must be finite and greater than zero"
+        }
+        require(maximumHeightMm.isFinite() && maximumHeightMm > 0.0) {
+            "Maximum height must be finite and greater than zero"
+        }
+        require(overhangThresholdDegrees.isFinite() && overhangThresholdDegrees in 0.0..90.0) {
+            "Overhang threshold must be between 0 and 90 degrees"
+        }
+        require(maximumCandidateNormals in 1..24) {
+            "Maximum candidate normal count must be between 1 and 24"
+        }
+        require(
+            normalClusterToleranceDegrees.isFinite() &&
+                normalClusterToleranceDegrees > 0.0 &&
+                normalClusterToleranceDegrees <= 30.0,
+        ) {
+            "Normal cluster tolerance must be greater than 0 and at most 30 degrees"
+        }
+
+        val sourceTriangles = ArrayList<Triangle>()
+        val sourceBoundsAccumulator = BoundsAccumulator()
+        forEachTriangle(file) { triangle ->
+            sourceTriangles += triangle
+            triangle.vertices.forEach(sourceBoundsAccumulator::include)
+        }
+        require(sourceTriangles.isNotEmpty()) { "STL contains no triangles: ${file.name}" }
+        val sourceBounds = sourceBoundsAccumulator.toBounds()
+        val meshCenter = Vertex(sourceBounds.centerX, sourceBounds.centerY, sourceBounds.centerZ)
+        val faces = sourceTriangles.mapNotNull { triangle ->
+            val cross = triangle.crossProduct()
+            val doubleArea = cross.magnitude()
+            if (doubleArea <= GeometryEpsilon) {
+                null
+            } else {
+                var normal = cross * (1.0 / doubleArea)
+                // STL winding is not always trustworthy. For a closed mesh, the face-to-bounds-
+                // center direction is a useful deterministic outward-normal fallback.
+                if ((triangle.centroid() - meshCenter).dot(normal) < 0.0) normal = normal * -1.0
+                AutoOrientationFace(triangle, normal, doubleArea / 2.0)
+            }
+        }
+        if (faces.isEmpty()) return null
+
+        val dominantNormals = clusterDominantNormals(
+            faces = faces,
+            toleranceDegrees = normalClusterToleranceDegrees,
+            maximumCount = maximumCandidateNormals,
+        )
+        val directionDeduplicationCosine = cos(Math.toRadians(0.25))
+        val supportDirections = ArrayList<Vertex>(6 + dominantNormals.size)
+        fun addSupportDirection(direction: Vertex) {
+            val normalized = direction.normalizedOrNull() ?: return
+            if (supportDirections.none { it.dot(normalized) >= directionDeduplicationCosine }) {
+                supportDirections += normalized
+            }
+        }
+        // Identity is deliberately first so exact score ties preserve the current orientation.
+        addSupportDirection(Vertex(0.0, 0.0, -1.0))
+        addSupportDirection(Vertex(0.0, 0.0, 1.0))
+        addSupportDirection(Vertex(-1.0, 0.0, 0.0))
+        addSupportDirection(Vertex(1.0, 0.0, 0.0))
+        addSupportDirection(Vertex(0.0, -1.0, 0.0))
+        addSupportDirection(Vertex(0.0, 1.0, 0.0))
+        dominantNormals.forEach(::addSupportDirection)
+
+        val matrices = ArrayList<Matrix3>(supportDirections.size * 2)
+        supportDirections.forEach { supportDirection ->
+            val base = Matrix3.fromTo(supportDirection, Vertex(0.0, 0.0, -1.0))
+            listOf(base, base.preRotateZDegrees(90.0)).forEach { matrix ->
+                if (matrices.none { it.isApproximatelyEqualTo(matrix) }) matrices += matrix
+            }
+        }
+
+        val totalSurfaceArea = faces.sumOf(AutoOrientationFace::areaMm2)
+        val downwardNormalLimit = -cos(Math.toRadians(overhangThresholdDegrees))
+        var best: AutoOrientationEvaluation? = null
+        matrices.forEachIndexed { index, matrix ->
+            val evaluation = evaluateAutoOrientationCandidate(
+                faces = faces,
+                sourceBounds = sourceBounds,
+                matrix = matrix,
+                totalSurfaceArea = totalSurfaceArea,
+                downwardNormalLimit = downwardNormalLimit,
+                bedWidthMm = bedWidthMm,
+                bedDepthMm = bedDepthMm,
+                maximumHeightMm = maximumHeightMm,
+                candidateIndex = index,
+            ) ?: return@forEachIndexed
+            if (best == null || evaluation.isBetterThan(requireNotNull(best))) best = evaluation
+        }
+
+        val selected = best ?: return null
+        val euler = selected.matrix.toEulerDegrees()
+        return StlAutoOrientationSuggestion(
+            rotationXDegrees = euler.x.normalizedDegrees(),
+            rotationYDegrees = euler.y.normalizedDegrees(),
+            rotationZDegrees = euler.z.normalizedDegrees(),
+            positionZmm = (-selected.bounds.minimumZ).zeroIfTiny(),
+            estimatedUnsupportedAreaMm2 = selected.unsupportedAreaMm2,
+            contactHullAreaMm2 = selected.contactHullAreaMm2,
+            resultingHeightMm = selected.bounds.height,
+            score = selected.score,
+        )
+    }
+
     fun compose(placements: List<StlPlatePlacement>, output: File): StlPlateComposition {
         require(placements.isNotEmpty()) { "The print plate contains no models" }
         val inspected = placements.map { placement ->
@@ -257,6 +410,223 @@ object StlPlateComposer {
         )
     }
 }
+
+private data class AutoOrientationFace(
+    val triangle: Triangle,
+    val outwardNormal: Vertex,
+    val areaMm2: Double,
+)
+
+private class AutoOrientationNormalCluster(first: AutoOrientationFace) {
+    var totalAreaMm2: Double = first.areaMm2
+        private set
+    private var weightedX: Double = first.outwardNormal.x * first.areaMm2
+    private var weightedY: Double = first.outwardNormal.y * first.areaMm2
+    private var weightedZ: Double = first.outwardNormal.z * first.areaMm2
+
+    val direction: Vertex
+        get() = requireNotNull(Vertex(weightedX, weightedY, weightedZ).normalizedOrNull())
+
+    fun include(face: AutoOrientationFace) {
+        totalAreaMm2 += face.areaMm2
+        weightedX += face.outwardNormal.x * face.areaMm2
+        weightedY += face.outwardNormal.y * face.areaMm2
+        weightedZ += face.outwardNormal.z * face.areaMm2
+    }
+}
+
+private data class Point2(val x: Double, val y: Double)
+
+private data class AutoOrientationEvaluation(
+    val matrix: Matrix3,
+    val bounds: StlMeshBounds,
+    val unsupportedAreaMm2: Double,
+    val contactHullAreaMm2: Double,
+    val score: Double,
+    val rotationDistanceRadians: Double,
+    val candidateIndex: Int,
+) {
+    fun isBetterThan(other: AutoOrientationEvaluation): Boolean {
+        compareMetric(score, other.score)?.let { return it < 0 }
+        compareMetric(unsupportedAreaMm2, other.unsupportedAreaMm2)?.let { return it < 0 }
+        compareMetric(contactHullAreaMm2, other.contactHullAreaMm2)?.let { return it > 0 }
+        compareMetric(bounds.height, other.bounds.height)?.let { return it < 0 }
+        compareMetric(rotationDistanceRadians, other.rotationDistanceRadians)?.let { return it < 0 }
+        return candidateIndex < other.candidateIndex
+    }
+}
+
+private fun compareMetric(first: Double, second: Double): Int? {
+    val tolerance = 1e-10 * maxOf(1.0, abs(first), abs(second))
+    return when {
+        first < second - tolerance -> -1
+        first > second + tolerance -> 1
+        else -> null
+    }
+}
+
+private fun clusterDominantNormals(
+    faces: List<AutoOrientationFace>,
+    toleranceDegrees: Double,
+    maximumCount: Int,
+): List<Vertex> {
+    val minimumDot = cos(Math.toRadians(toleranceDegrees))
+    // Sorting makes greedy grouping independent of STL triangle record order.
+    val orderedFaces = faces.sortedWith(
+        compareBy<AutoOrientationFace> { it.outwardNormal.x }
+            .thenBy { it.outwardNormal.y }
+            .thenBy { it.outwardNormal.z }
+            .thenBy { it.triangle.centroid().x }
+            .thenBy { it.triangle.centroid().y }
+            .thenBy { it.triangle.centroid().z },
+    )
+    val clusters = ArrayList<AutoOrientationNormalCluster>()
+    orderedFaces.forEach { face ->
+        var selectedIndex = -1
+        var selectedDot = minimumDot
+        clusters.forEachIndexed { index, cluster ->
+            val dot = cluster.direction.dot(face.outwardNormal)
+            if (dot >= minimumDot && (selectedIndex < 0 || dot > selectedDot + GeometryEpsilon)) {
+                selectedIndex = index
+                selectedDot = dot
+            }
+        }
+        if (selectedIndex >= 0) {
+            clusters[selectedIndex].include(face)
+        } else {
+            clusters += AutoOrientationNormalCluster(face)
+        }
+    }
+    return clusters
+        .sortedWith(
+            compareByDescending<AutoOrientationNormalCluster> { it.totalAreaMm2 }
+                .thenBy { it.direction.x }
+                .thenBy { it.direction.y }
+                .thenBy { it.direction.z },
+        )
+        .take(maximumCount)
+        .map(AutoOrientationNormalCluster::direction)
+}
+
+private fun evaluateAutoOrientationCandidate(
+    faces: List<AutoOrientationFace>,
+    sourceBounds: StlMeshBounds,
+    matrix: Matrix3,
+    totalSurfaceArea: Double,
+    downwardNormalLimit: Double,
+    bedWidthMm: Double,
+    bedDepthMm: Double,
+    maximumHeightMm: Double,
+    candidateIndex: Int,
+): AutoOrientationEvaluation? {
+    val boundsAccumulator = BoundsAccumulator()
+    faces.forEach { face ->
+        face.triangle.vertices.forEach { source ->
+            boundsAccumulator.include(matrix.apply(source.toCenteredLocal(sourceBounds)))
+        }
+    }
+    val bounds = boundsAccumulator.toBounds()
+    val fitTolerance = 1e-6
+    if (
+        bounds.width > bedWidthMm + fitTolerance ||
+        bounds.depth > bedDepthMm + fitTolerance ||
+        bounds.height > maximumHeightMm + fitTolerance
+    ) {
+        return null
+    }
+
+    val contactTolerance = maxOf(
+        1e-5,
+        maxOf(bounds.width, bounds.depth, bounds.height) * 1e-6,
+    )
+    val contactPoints = ArrayList<Point2>()
+    var unsupportedArea = 0.0
+    faces.forEach { face ->
+        val transformed = face.triangle.vertices.map { source ->
+            matrix.apply(source.toCenteredLocal(sourceBounds))
+        }
+        val touchesBedAsFace = transformed.all { vertex ->
+            abs(vertex.z - bounds.minimumZ) <= contactTolerance
+        }
+        if (touchesBedAsFace) {
+            transformed.forEach { vertex -> contactPoints += Point2(vertex.x, vertex.y) }
+        } else {
+            val transformedNormal = matrix.apply(face.outwardNormal)
+            if (transformedNormal.z < downwardNormalLimit - GeometryEpsilon) {
+                unsupportedArea += face.areaMm2
+            }
+        }
+    }
+
+    val contactHullArea = convexHullArea(contactPoints)
+    val footprintArea = bounds.width * bounds.depth
+    val unsupportedRatio = (unsupportedArea / totalSurfaceArea).coerceIn(0.0, 1.0)
+    val contactCoverage = if (footprintArea > GeometryEpsilon) {
+        (contactHullArea / footprintArea).coerceIn(0.0, 1.0)
+    } else {
+        0.0
+    }
+    val heightRatio = (bounds.height / maximumHeightMm).coerceIn(0.0, 1.0)
+    val score =
+        AutoOrientationUnsupportedWeight * unsupportedRatio +
+            AutoOrientationContactWeight * (1.0 - contactCoverage) +
+            AutoOrientationHeightWeight * heightRatio
+    return AutoOrientationEvaluation(
+        matrix = matrix,
+        bounds = bounds,
+        unsupportedAreaMm2 = unsupportedArea,
+        contactHullAreaMm2 = contactHullArea,
+        score = score,
+        rotationDistanceRadians = matrix.rotationDistanceRadians(),
+        candidateIndex = candidateIndex,
+    )
+}
+
+private fun Vertex.toCenteredLocal(sourceBounds: StlMeshBounds): Vertex = Vertex(
+    x = x - sourceBounds.centerX,
+    y = y - sourceBounds.centerY,
+    z = z - sourceBounds.minimumZ,
+)
+
+private fun convexHullArea(points: List<Point2>): Double {
+    if (points.size < 3) return 0.0
+    val sorted = points.distinct().sortedWith(compareBy<Point2> { it.x }.thenBy { it.y })
+    if (sorted.size < 3) return 0.0
+
+    fun cross(origin: Point2, first: Point2, second: Point2): Double =
+        (first.x - origin.x) * (second.y - origin.y) -
+            (first.y - origin.y) * (second.x - origin.x)
+
+    val lower = ArrayList<Point2>()
+    sorted.forEach { point ->
+        while (lower.size >= 2 && cross(lower[lower.lastIndex - 1], lower.last(), point) <= GeometryEpsilon) {
+            lower.removeAt(lower.lastIndex)
+        }
+        lower += point
+    }
+    val upper = ArrayList<Point2>()
+    sorted.asReversed().forEach { point ->
+        while (upper.size >= 2 && cross(upper[upper.lastIndex - 1], upper.last(), point) <= GeometryEpsilon) {
+            upper.removeAt(upper.lastIndex)
+        }
+        upper += point
+    }
+    lower.removeAt(lower.lastIndex)
+    upper.removeAt(upper.lastIndex)
+    val hull = lower + upper
+    if (hull.size < 3) return 0.0
+    var twiceArea = 0.0
+    hull.indices.forEach { index ->
+        val current = hull[index]
+        val next = hull[(index + 1) % hull.size]
+        twiceArea += current.x * next.y - current.y * next.x
+    }
+    return abs(twiceArea) / 2.0
+}
+
+private const val AutoOrientationUnsupportedWeight = 0.70
+private const val AutoOrientationContactWeight = 0.20
+private const val AutoOrientationHeightWeight = 0.10
 
 private fun validatePlacement(placement: StlPlatePlacement) {
     require(
@@ -352,6 +722,33 @@ private data class Matrix3(
         x = m00 * vertex.x + m01 * vertex.y + m02 * vertex.z,
         y = m10 * vertex.x + m11 * vertex.y + m12 * vertex.z,
         z = m20 * vertex.x + m21 * vertex.y + m22 * vertex.z,
+    )
+
+    fun preRotateZDegrees(degrees: Double): Matrix3 =
+        fromEulerDegrees(0.0, 0.0, degrees).multiply(this)
+
+    fun isApproximatelyEqualTo(other: Matrix3, tolerance: Double = 1e-10): Boolean =
+        entries().zip(other.entries()).all { (first, second) -> abs(first - second) <= tolerance }
+
+    fun rotationDistanceRadians(): Double =
+        acos(((m00 + m11 + m22 - 1.0) / 2.0).coerceIn(-1.0, 1.0))
+
+    private fun multiply(right: Matrix3): Matrix3 = Matrix3(
+        m00 = m00 * right.m00 + m01 * right.m10 + m02 * right.m20,
+        m01 = m00 * right.m01 + m01 * right.m11 + m02 * right.m21,
+        m02 = m00 * right.m02 + m01 * right.m12 + m02 * right.m22,
+        m10 = m10 * right.m00 + m11 * right.m10 + m12 * right.m20,
+        m11 = m10 * right.m01 + m11 * right.m11 + m12 * right.m21,
+        m12 = m10 * right.m02 + m11 * right.m12 + m12 * right.m22,
+        m20 = m20 * right.m00 + m21 * right.m10 + m22 * right.m20,
+        m21 = m20 * right.m01 + m21 * right.m11 + m22 * right.m21,
+        m22 = m20 * right.m02 + m21 * right.m12 + m22 * right.m22,
+    )
+
+    private fun entries(): List<Double> = listOf(
+        m00, m01, m02,
+        m10, m11, m12,
+        m20, m21, m22,
     )
 
     fun toEulerDegrees(): Vertex {
@@ -575,3 +972,5 @@ private fun Double.normalizedDegrees(): Double {
     val normalized = this % 360.0
     return if (normalized < 0.0) normalized + 360.0 else normalized
 }
+
+private fun Double.zeroIfTiny(): Double = if (abs(this) <= 1e-10) 0.0 else this

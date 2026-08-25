@@ -24,6 +24,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
@@ -38,8 +44,21 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build, bundle and lint
-        run: ./gradlew :app:assembleDebug :app:bundleDebug lintDebug --stacktrace
+      - name: Test and build viewer
+        run: |
+          npm ci
+          npm run test:viewer
+          npm run build:viewer
+          git diff --exit-code -- app/src/main/assets/viewer/viewer.bundle.js
+
+      - name: Test, build, bundle and lint Android
+        run: >-
+          ./gradlew
+          :app:testDebugUnitTest
+          :app:assembleDebug
+          :app:bundleDebug
+          :app:lintDebug
+          --stacktrace
 
       - name: Install bundletool
         env:

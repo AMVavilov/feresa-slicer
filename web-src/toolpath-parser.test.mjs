@@ -109,6 +109,13 @@ test("detailed preview keeps layer, speed and travel metadata", () => {
     assert.equal(result.segments[3].z, 0.4);
 });
 
+test("detailed preview reports source line numbers without counting a trailing newline", () => {
+    const result = parseToolpathDetailed("G90\nG0 X10 Y10 Z0.2\nG1 X20 Y10 E1\n", 220, 220);
+
+    assert.equal(result.lineCount, 3);
+    assert.deepEqual(result.segments.map((segment) => segment.lineNumber), [2, 3]);
+});
+
 test("maximum speed handles toolpaths larger than the JavaScript argument limit", () => {
     const segments = Array.from({ length: 200_000 }, (_, index) => ({
         extrusion: index % 2 === 0,
@@ -275,11 +282,17 @@ test("selection payload reports metadata for the last actually displayed segment
         maximumSegmentRatio: 0,
     });
 
-    assert.deepEqual(toolpathSelectionPayload(eligible, visible), {
+    const commands = [{ lineNumber: 9, source: "G1 X30 Y40 E0.5 F2700", active: true }];
+    assert.deepEqual(toolpathSelectionPayload(eligible, visible, { lineCount: 37, commands }), {
         selected: true,
         displayedSegmentCount: 1,
         eligibleSegmentCount: 2,
+        lineCount: 37,
+        minimumLayerZ: 0.24,
+        maximumLayerZ: 0.24,
+        commands,
         layer: 0,
+        lineNumber: 9,
         x: 30,
         y: 40,
         z: 0.24,
@@ -290,9 +303,13 @@ test("selection payload reports metadata for the last actually displayed segment
         lineWidth: 0.46,
         layerHeight: 0.24,
     });
-    assert.deepEqual(toolpathSelectionPayload(eligible, []), {
+    assert.deepEqual(toolpathSelectionPayload(eligible, [], { lineCount: 37 }), {
         selected: false,
         displayedSegmentCount: 0,
         eligibleSegmentCount: 2,
+        lineCount: 37,
+        minimumLayerZ: 0.24,
+        maximumLayerZ: 0.24,
+        commands: [],
     });
 });
