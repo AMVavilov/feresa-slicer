@@ -9,7 +9,7 @@ console items below are historical facts about version code 31; they do not
 replace a fresh test report, the documented manual matrix, Play-delivered
 testing, or human authorization for the exact signed artifacts.
 
-Target release: `0.16.0-alpha.2` (`versionCode` 32).
+Target release: `0.17.0-alpha.1` (`versionCode` 33).
 
 ## Release gates
 

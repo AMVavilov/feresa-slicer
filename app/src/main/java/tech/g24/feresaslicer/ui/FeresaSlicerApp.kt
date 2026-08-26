@@ -10,8 +10,14 @@ import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -30,6 +36,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -77,7 +84,9 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.SemanticsPropertyKey
 import androidx.compose.ui.semantics.SemanticsPropertyReceiver
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
@@ -92,9 +101,11 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import tech.g24.feresaslicer.slicer.OrcaMachineFilamentScalars
 import tech.g24.feresaslicer.slicer.OrcaPlateSliceFiles
@@ -123,6 +134,7 @@ import tech.g24.feresaslicer.auth.OrcaProfileType
 import tech.g24.feresaslicer.auth.printerConnection
 import tech.g24.feresaslicer.catalog.OrcaSystemPrinterCatalog
 import tech.g24.feresaslicer.catalog.OrcaSystemPrinterProfile
+import tech.g24.feresaslicer.catalog.OrcaPrinterCatalogSelection
 import tech.g24.feresaslicer.catalog.filterPrinters
 import tech.g24.feresaslicer.printer.NetworkPrinterClient
 import tech.g24.feresaslicer.printer.ManualPrinterConnectionDraft
@@ -134,6 +146,8 @@ import tech.g24.feresaslicer.printer.PrinterOperationalState
 import tech.g24.feresaslicer.printer.PrinterStatus
 import tech.g24.feresaslicer.printer.SavedManualPrinterConnection
 import tech.g24.feresaslicer.modelimport.ModelFileImporter
+import tech.g24.feresaslicer.modelimport.ExternalModelOpenRequests
+import tech.g24.feresaslicer.modelimport.ModelDocumentPolicy
 import tech.g24.feresaslicer.plate.PlateBounds
 import tech.g24.feresaslicer.plate.PlateAxis
 import tech.g24.feresaslicer.plate.PlateModelSource
@@ -255,6 +269,16 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
     val context = LocalContext.current
     val applicationContext = context.applicationContext
     val scope = rememberCoroutineScope()
+    val modelOperationMutex = remember { Mutex() }
+
+    suspend fun <T> withExclusiveModelOperation(block: suspend () -> T): T {
+        modelOperationMutex.lock()
+        return try {
+            block()
+        } finally {
+            modelOperationMutex.unlock()
+        }
+    }
     val slicerSettingsStore = remember(applicationContext) {
         SlicerSettingsStore(applicationContext)
     }
@@ -415,15 +439,21 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
         message: String,
     ) {
         scope.launch {
-            isWorking = true
-            runCatching {
-                withContext(Dispatchers.Default) { updated.moveObjectToExactBed(objectId) }
-            }.onSuccess { exactWorkspace ->
-                commitPlateWorkspace(exactWorkspace, message)
-            }.onFailure { error ->
-                errorMessage = error.message ?: "Не удалось разместить модель на столе"
+            withExclusiveModelOperation {
+                isWorking = true
+                try {
+                    val exactWorkspace = withContext(Dispatchers.Default) {
+                        updated.moveObjectToExactBed(objectId)
+                    }
+                    commitPlateWorkspace(exactWorkspace, message)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    errorMessage = error.message ?: "Не удалось разместить модель на столе"
+                } finally {
+                    isWorking = false
+                }
             }
-            isWorking = false
         }
     }
 
@@ -437,9 +467,10 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
         val selectedFile = selectedModel.source.file
         val buildVolume = RectangularBuildVolume(bedWidth, bedDepth, printableHeight)
         scope.launch {
-            isWorking = true
-            try {
-                runCatching {
+            withExclusiveModelOperation {
+                isWorking = true
+                try {
+                    runCatching {
                     val orientation = withContext(Dispatchers.Default) {
                         if (useBasicAutoOrientation) {
                             StlPlateComposer.suggestBasicAutoOrientation(
@@ -489,13 +520,15 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
                     withContext(Dispatchers.Default) {
                         orientedWorkspace.moveObjectToExactBed(selectedId)
                     }
-                }.onSuccess { exactWorkspace ->
-                    commitPlateWorkspace(exactWorkspace, message)
-                }.onFailure { error ->
-                    errorMessage = error.message ?: "Не удалось ориентировать модель"
+                    }.onSuccess { exactWorkspace ->
+                        commitPlateWorkspace(exactWorkspace, message)
+                    }.onFailure { error ->
+                        if (error is CancellationException) throw error
+                        errorMessage = error.message ?: "Не удалось ориентировать модель"
+                    }
+                } finally {
+                    isWorking = false
                 }
-            } finally {
-                isWorking = false
             }
         }
     }
@@ -705,19 +738,18 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
         invalidatePlateSlice()
     }
 
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+    val importModelUris: suspend (List<Uri>) -> Unit = { uris ->
         if (uris.isNotEmpty()) {
-            scope.launch {
-                isWorking = true
-                errorMessage = null
-                runCatching {
-                    withContext(Dispatchers.IO) {
+            withExclusiveModelOperation {
+                try {
+                    isWorking = true
+                    errorMessage = null
+                    val importedModels = withContext(Dispatchers.IO) {
                         uris.map { uri ->
                             val id = PlateObjectId.newId()
                             id to copyModelToCache(context, uri, id)
                         }
                     }
-                }.onSuccess { importedModels ->
                     var updatedWorkspace = plateWorkspace
                     val buildVolume = RectangularBuildVolume(bedWidth, bedDepth, printableHeight)
                     importedModels.forEach { (id, source) ->
@@ -725,15 +757,29 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
                         updatedWorkspace = updatedWorkspace.add(source, id, transform, select = true)
                     }
                     plateWorkspace = updatedWorkspace
+                    destination = AppDestination.MODEL
                     modelWorkspaceSection = ModelWorkspaceSection.VIEW
                     invalidatePlateSlice()
                     viewerMessage = null
                     modelActionMessage = "Добавлено моделей: ${importedModels.size}"
-                }.onFailure { error ->
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
                     errorMessage = error.message ?: "Не удалось импортировать выбранный файл"
+                } finally {
+                    isWorking = false
                 }
-                isWorking = false
             }
+        }
+    }
+    val latestImportModelUris by rememberUpdatedState(importModelUris)
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        scope.launch { latestImportModelUris(uris) }
+    }
+
+    LaunchedEffect(Unit) {
+        ExternalModelOpenRequests.requests.collect { request ->
+            latestImportModelUris(listOf(request.uri))
         }
     }
 
@@ -815,16 +861,19 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
         val runToken = UUID.randomUUID().toString()
 
         scope.launch {
-            isWorking = true
-            errorMessage = null
-            report = null
-            generatedGcode = null
-            generatedGcodeGeneration = null
-            viewerMode = ViewerMode.MODEL
-            val outputFile = File(context.cacheDir, "feresa-slicer-output-$runToken.gcode")
-            val configFile = File(context.cacheDir, "feresa-orca-$runToken.ini")
-            val plateFile = File(context.cacheDir, "feresa-slicer-plate-$runToken.stl")
-            runCatching {
+            withExclusiveModelOperation {
+                if (sliceGeneration != generationSnapshot) return@withExclusiveModelOperation
+                isWorking = true
+                errorMessage = null
+                report = null
+                generatedGcode = null
+                generatedGcodeGeneration = null
+                viewerMode = ViewerMode.MODEL
+                val outputFile = File(context.cacheDir, "feresa-slicer-output-$runToken.gcode")
+                val configFile = File(context.cacheDir, "feresa-orca-$runToken.ini")
+                val plateFile = File(context.cacheDir, "feresa-slicer-plate-$runToken.stl")
+                try {
+                    runCatching {
                 withContext(Dispatchers.Default) {
                     val completeProcessPayload = printSettings.toOrcaProcessSettingsPayload()
                     val liveProcessPayload = if (activeProcessProfile == null) {
@@ -872,49 +921,59 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
                             composedPlate = plateFile,
                             gcode = outputFile,
                         ),
+                        modelNames = plateSnapshot.objects.map(PlateObject::sourceName),
                     ).report
                 }
-            }.onSuccess { result ->
-                if (sliceGeneration != generationSnapshot) {
-                    outputFile.delete()
-                    return@onSuccess
+                    }.onSuccess { result ->
+                        if (sliceGeneration != generationSnapshot) {
+                            outputFile.delete()
+                            return@onSuccess
+                        }
+                        report = result
+                        if (result.success) {
+                            generatedGcode = outputFile
+                            generatedGcodeGeneration = generationSnapshot
+                            viewerMode = ViewerMode.TOOLPATH
+                            modelWorkspaceSection = ModelWorkspaceSection.SLICE
+                            toolpathMinimumLayer = 0
+                            toolpathMaximumLayer = (result.layers.toInt() - 1).coerceAtLeast(0)
+                            toolpathProgress = 1f
+                            showExtrusionMoves = true
+                            showTravelMoves = false
+                        } else {
+                            outputFile.delete()
+                            generatedGcode = null
+                            generatedGcodeGeneration = null
+                            errorMessage = result.message
+                        }
+                    }.onFailure { error ->
+                        if (error is CancellationException) throw error
+                        outputFile.delete()
+                        if (sliceGeneration != generationSnapshot) return@onFailure
+                        generatedGcode = null
+                        generatedGcodeGeneration = null
+                        errorMessage = error.message ?: "Ошибка слайсера"
+                    }
+                } finally {
+                    configFile.delete()
+                    plateFile.delete()
+                    if (generatedGcode != outputFile) outputFile.delete()
+                    isWorking = false
                 }
-                report = result
-                if (result.success) {
-                    generatedGcode = outputFile
-                    generatedGcodeGeneration = generationSnapshot
-                    viewerMode = ViewerMode.TOOLPATH
-                    modelWorkspaceSection = ModelWorkspaceSection.SLICE
-                    toolpathMinimumLayer = 0
-                    toolpathMaximumLayer = (result.layers.toInt() - 1).coerceAtLeast(0)
-                    toolpathProgress = 1f
-                    showExtrusionMoves = true
-                    showTravelMoves = false
-                } else {
-                    outputFile.delete()
-                    generatedGcode = null
-                    generatedGcodeGeneration = null
-                    errorMessage = result.message
-                }
-            }.onFailure { error ->
-                outputFile.delete()
-                if (sliceGeneration != generationSnapshot) return@onFailure
-                generatedGcode = null
-                generatedGcodeGeneration = null
-                errorMessage = error.message ?: "Ошибка слайсера"
             }
-            configFile.delete()
-            plateFile.delete()
-            isWorking = false
         }
     }
 
-    LaunchedEffect(modelWorkspaceSection) {
-        if (modelWorkspaceSection != ModelWorkspaceSection.POSITION) {
+    LaunchedEffect(destination, modelWorkspaceSection) {
+        if (destination != AppDestination.MODEL || modelWorkspaceSection != ModelWorkspaceSection.POSITION) {
             selectedPositionTool = null
         }
     }
-    BackHandler(enabled = selectedPositionTool != null) {
+    BackHandler(
+        enabled = destination == AppDestination.MODEL &&
+            modelWorkspaceSection == ModelWorkspaceSection.POSITION &&
+            selectedPositionTool != null,
+    ) {
         selectedPositionTool = null
     }
 
@@ -931,7 +990,8 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
                         destination == AppDestination.MODEL &&
                         hasPlateModels &&
                         modelWorkspaceSection != ModelWorkspaceSection.VIEW &&
-                        modelWorkspaceSection != ModelWorkspaceSection.POSITION
+                        modelWorkspaceSection != ModelWorkspaceSection.POSITION &&
+                        modelWorkspaceSection != ModelWorkspaceSection.SLICE
                     ) {
                         ModelWorkspaceNavigation(
                             selected = modelWorkspaceSection,
@@ -988,7 +1048,8 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
                     hasPlateModels &&
                     (
                         modelWorkspaceSection == ModelWorkspaceSection.VIEW ||
-                            modelWorkspaceSection == ModelWorkspaceSection.POSITION
+                            modelWorkspaceSection == ModelWorkspaceSection.POSITION ||
+                            modelWorkspaceSection == ModelWorkspaceSection.SLICE
                     )
 
             if (showPersistentModelCanvas) {
@@ -1000,35 +1061,85 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
                         )
                         .fillMaxSize(),
                 ) {
-                    ModelViewer(
-                        modelFile = selectedFile,
-                        gcodeFile = null,
-                        transform = modelTransform,
-                        bedWidth = bedWidth,
-                        bedDepth = bedDepth,
-                        mode = ViewerMode.MODEL,
-                        darkTheme = useDarkTheme,
-                        cameraResetRequest = cameraResetRequest,
-                        cameraViewRequest = cameraViewRequest,
-                        cameraFramingRequest = cameraFramingRequest,
-                        initialCameraState = viewerCameraState,
-                        modelObjects = viewerModelObjects,
-                        selectedObjectId = plateWorkspace.selectedObjectId?.value,
-                        onObjectSelected = ::applyViewerSelection,
-                        onSceneState = {
-                            viewerSceneState = it
-                            viewerMessage = null
-                        },
-                        onCameraStateChange = { state ->
-                            viewerCameraState = state
-                            selectedCameraViewPreset = state.preset
-                                .takeIf { state.mode == ViewerCameraMode.PRESET }
-                        },
-                        onError = { viewerMessage = it },
-                        viewerHeight = null,
-                        showStatus = false,
-                        modifier = Modifier.fillMaxSize(),
-                    )
+                    if (modelWorkspaceSection == ModelWorkspaceSection.SLICE) {
+                        OrcaSliceWorkspace(
+                            modelFile = selectedFile,
+                            gcodeFile = currentGeneratedGcode,
+                            report = report,
+                            transform = modelTransform,
+                            bedWidth = bedWidth,
+                            bedDepth = bedDepth,
+                            darkTheme = useDarkTheme,
+                            isWorking = isWorking,
+                            minimumLayer = toolpathMinimumLayer,
+                            maximumLayer = toolpathMaximumLayer,
+                            colorMode = toolpathColorMode,
+                            showExtrusion = showExtrusionMoves,
+                            showTravel = showTravelMoves,
+                            progress = toolpathProgress,
+                            layerHeightMm = layerHeight.toDoubleOrNull() ?: 0.2,
+                            cameraResetRequest = cameraResetRequest,
+                            initialCameraState = viewerCameraState,
+                            modelObjects = viewerModelObjects,
+                            selectedObjectId = plateWorkspace.selectedObjectId?.value,
+                            onObjectSelected = ::applyViewerSelection,
+                            onSceneState = {
+                                viewerSceneState = it
+                                viewerMessage = null
+                            },
+                            onCameraStateChange = { state ->
+                                viewerCameraState = state
+                                selectedCameraViewPreset = state.preset
+                                    .takeIf { state.mode == ViewerCameraMode.PRESET }
+                            },
+                            onViewerError = { viewerMessage = it },
+                            onSlice = sliceCurrentModel,
+                            onMinimumLayerChange = { toolpathMinimumLayer = it.coerceAtMost(toolpathMaximumLayer) },
+                            onMaximumLayerChange = { toolpathMaximumLayer = it.coerceAtLeast(toolpathMinimumLayer) },
+                            onColorModeChange = { toolpathColorMode = it },
+                            onShowExtrusionChange = { showExtrusionMoves = it },
+                            onShowTravelChange = { showTravelMoves = it },
+                            onProgressChange = { toolpathProgress = it },
+                            onResetCamera = { cameraResetRequest += 1 },
+                            onSaveGcode = saveCurrentGcode,
+                            onSendToPrinter = {
+                                printerConnectionTestResult = null
+                                showSendToPrinter = true
+                            },
+                            isSendingToPrinter = isSendingToPrinter,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        ModelViewer(
+                            modelFile = selectedFile,
+                            gcodeFile = null,
+                            transform = modelTransform,
+                            bedWidth = bedWidth,
+                            bedDepth = bedDepth,
+                            mode = ViewerMode.MODEL,
+                            darkTheme = useDarkTheme,
+                            cameraResetRequest = cameraResetRequest,
+                            cameraViewRequest = cameraViewRequest,
+                            cameraFramingRequest = cameraFramingRequest,
+                            initialCameraState = viewerCameraState,
+                            modelObjects = viewerModelObjects,
+                            selectedObjectId = plateWorkspace.selectedObjectId?.value,
+                            onObjectSelected = ::applyViewerSelection,
+                            onSceneState = {
+                                viewerSceneState = it
+                                viewerMessage = null
+                            },
+                            onCameraStateChange = { state ->
+                                viewerCameraState = state
+                                selectedCameraViewPreset = state.preset
+                                    .takeIf { state.mode == ViewerCameraMode.PRESET }
+                            },
+                            onError = { viewerMessage = it },
+                            viewerHeight = null,
+                            showStatus = false,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
                     if (modelWorkspaceSection == ModelWorkspaceSection.VIEW) {
                         CameraViewPresetOverlay(
                             selectedPreset = selectedCameraViewPreset,
@@ -1145,16 +1256,22 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
                                     it.copy(scale = 1.0, scaleX = 1.0, scaleY = 1.0, scaleZ = 1.0)
                                 }
                             },
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = 82.dp),
+                            modifier = Modifier.fillMaxSize(),
                         )
                     }
-                    viewerMessage?.let { message ->
+                    val workspaceMessage = if (modelWorkspaceSection == ModelWorkspaceSection.SLICE) {
+                        errorMessage ?: viewerMessage
+                    } else {
+                        viewerMessage
+                    }
+                    workspaceMessage?.let { message ->
                         androidx.compose.material3.Surface(
                             modifier = Modifier
                                 .align(Alignment.TopCenter)
-                                .padding(horizontal = 72.dp, vertical = 12.dp),
+                                .padding(
+                                    horizontal = 72.dp,
+                                    vertical = if (modelWorkspaceSection == ModelWorkspaceSection.SLICE) 76.dp else 12.dp,
+                                ),
                             color = MaterialTheme.colorScheme.errorContainer,
                             contentColor = MaterialTheme.colorScheme.onErrorContainer,
                             shape = RoundedCornerShape(14.dp),
@@ -1185,56 +1302,7 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
             ) {
                 when (destination) {
                     AppDestination.MODEL -> {
-                if (modelWorkspaceSection == ModelWorkspaceSection.SLICE) {
-                    OrcaSliceWorkspace(
-                        modelFile = selectedFile,
-                        gcodeFile = currentGeneratedGcode,
-                        report = report,
-                        transform = modelTransform,
-                        bedWidth = bedWidth,
-                        bedDepth = bedDepth,
-                        darkTheme = useDarkTheme,
-                        isWorking = isWorking,
-                        viewerMessage = viewerMessage,
-                        minimumLayer = toolpathMinimumLayer,
-                        maximumLayer = toolpathMaximumLayer,
-                        colorMode = toolpathColorMode,
-                        showExtrusion = showExtrusionMoves,
-                        showTravel = showTravelMoves,
-                        progress = toolpathProgress,
-                        layerHeightMm = layerHeight.toDoubleOrNull() ?: 0.2,
-                        cameraResetRequest = cameraResetRequest,
-                        modelObjects = viewerModelObjects,
-                        selectedObjectId = plateWorkspace.selectedObjectId?.value,
-                        onObjectSelected = ::applyViewerSelection,
-                        onSceneState = { viewerSceneState = it },
-                        onViewerError = { viewerMessage = it },
-                        onSlice = sliceCurrentModel,
-                        onMinimumLayerChange = { toolpathMinimumLayer = it.coerceAtMost(toolpathMaximumLayer) },
-                        onMaximumLayerChange = { toolpathMaximumLayer = it.coerceAtLeast(toolpathMinimumLayer) },
-                        onColorModeChange = { toolpathColorMode = it },
-                        onShowExtrusionChange = { showExtrusionMoves = it },
-                        onShowTravelChange = { showTravelMoves = it },
-                        onProgressChange = { toolpathProgress = it },
-                        onResetCamera = { cameraResetRequest += 1 },
-                        onSaveGcode = saveCurrentGcode,
-                        onSendToPrinter = {
-                            printerConnectionTestResult = null
-                            showSendToPrinter = true
-                        },
-                        isSendingToPrinter = isSendingToPrinter,
-                    )
-                    errorMessage?.let { message ->
-                        Text(
-                            text = message,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(12.dp))
-                                .padding(14.dp),
-                        )
-                    }
-                } else if (modelWorkspaceSection == ModelWorkspaceSection.FILE) {
+                if (modelWorkspaceSection == ModelWorkspaceSection.FILE) {
                     SectionCard(title = "Модели на столе") {
                         if (plateWorkspace.objects.isEmpty()) {
                             Text("Файл не выбран", fontWeight = FontWeight.SemiBold)
@@ -1309,11 +1377,18 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
 
                         Spacer(Modifier.height(12.dp))
                         OutlinedButton(
-                            onClick = { filePicker.launch(arrayOf("*/*")) },
+                            onClick = { filePicker.launch(ModelDocumentPolicy.pickerMimeTypes) },
                             enabled = !isWorking,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Text(if (plateWorkspace.objects.isEmpty()) "Загрузить модель" else "Добавить модель")
+                        }
+                        TextButton(
+                            onClick = { filePicker.launch(arrayOf("*/*")) },
+                            enabled = !isWorking,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Не видите STL, OBJ или 3MF? Показать все файлы")
                         }
                         if (plateWorkspace.selectedObject != null) {
                             TextButton(
@@ -1391,7 +1466,7 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
                                 hasModel = hasPlateModels,
                                 hasGcode = currentGeneratedGcode != null,
                                 isWorking = isWorking,
-                                onImportModel = { filePicker.launch(arrayOf("*/*")) },
+                                onImportModel = { filePicker.launch(ModelDocumentPolicy.pickerMimeTypes) },
                                 onRemoveModel = removeCurrentModel,
                                 onResetCamera = { cameraResetRequest += 1 },
                                 onShowModel = { viewerMode = ViewerMode.MODEL },
@@ -2556,6 +2631,199 @@ private fun PositionWorkspaceOverlay(
     modifier: Modifier = Modifier,
 ) {
     val language = currentUiLanguage()
+    var uiState by remember { mutableStateOf(PositionWorkspaceOverlayUiState()) }
+    val dismissInteractionSource = remember { MutableInteractionSource() }
+    val trayInteractionSource = remember { MutableInteractionSource() }
+
+    fun dispatch(event: PositionWorkspaceOverlayEvent) {
+        uiState = uiState.reduce(event)
+    }
+
+    BackHandler(enabled = uiState.toolsExpanded) {
+        dispatch(PositionWorkspaceOverlayEvent.DismissTools)
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        if (uiState.toolsExpanded) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clickable(
+                        interactionSource = dismissInteractionSource,
+                        indication = null,
+                        onClick = { dispatch(PositionWorkspaceOverlayEvent.DismissTools) },
+                    ),
+            )
+        }
+
+        PositionWorkspaceEditor(
+            selectedTool = selectedTool,
+            selectedModel = selectedModel,
+            selectedModelInsideBed = selectedModelInsideBed,
+            bedWidth = bedWidth,
+            bedDepth = bedDepth,
+            printableHeight = printableHeight,
+            linkScaleAxes = linkScaleAxes,
+            isWorking = isWorking,
+            onLinkScaleAxesChange = onLinkScaleAxesChange,
+            onTransformChange = onTransformChange,
+            onCenter = onCenter,
+            onPlaceOnBed = onPlaceOnBed,
+            onRotate90 = onRotate90,
+            onResetScale = onResetScale,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 72.dp),
+        )
+
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            AnimatedVisibility(
+                visible = uiState.toolsExpanded,
+                modifier = Modifier.weight(1f),
+                enter = fadeIn() + expandHorizontally(expandFrom = Alignment.End),
+                exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.End),
+            ) {
+                androidx.compose.material3.Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = trayInteractionSource,
+                            indication = null,
+                            onClick = {},
+                        ),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    shape = RoundedCornerShape(20.dp),
+                    shadowElevation = 10.dp,
+                    tonalElevation = 4.dp,
+                ) {
+                    LazyRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics {
+                                contentDescription = positionWorkspaceOverlayPanelDescription(language)
+                            },
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        items(PositionWorkspaceTool.entries, key = PositionWorkspaceTool::name) { tool ->
+                            val enabled = !isWorking && when (tool) {
+                                PositionWorkspaceTool.ARRANGE -> hasModels
+                                else -> selectedModel != null
+                            }
+                            val isSelected = tool == selectedTool
+                            val tint = when {
+                                !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                                isSelected -> MaterialTheme.colorScheme.onPrimaryContainer
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                            androidx.compose.material3.Surface(
+                                modifier = Modifier
+                                    .width(78.dp)
+                                    .clickable(enabled = enabled) {
+                                        dispatch(PositionWorkspaceOverlayEvent.ToolSelected)
+                                        onToolSelected(tool)
+                                    },
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    Color.Transparent
+                                },
+                                contentColor = tint,
+                                shape = RoundedCornerShape(15.dp),
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                                ) {
+                                    Icon(
+                                        painter = painterResource(tool.icon),
+                                        contentDescription = localizeUiText(tool.label, language),
+                                        tint = tint,
+                                        modifier = Modifier.size(22.dp),
+                                    )
+                                    Text(
+                                        text = localizeUiText(tool.label, language),
+                                        color = tint,
+                                        fontSize = 9.sp,
+                                        lineHeight = 10.sp,
+                                        fontWeight = if (isSelected) {
+                                            FontWeight.SemiBold
+                                        } else {
+                                            FontWeight.Normal
+                                        },
+                                        textAlign = TextAlign.Center,
+                                        maxLines = 2,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.width(8.dp))
+
+            val triggerDescription = positionWorkspaceOverlayTriggerDescription(
+                uiState.toolsExpanded,
+                language,
+            )
+            androidx.compose.material3.Surface(
+                onClick = { dispatch(PositionWorkspaceOverlayEvent.ToggleTools) },
+                modifier = Modifier
+                    .size(52.dp)
+                    .semantics {
+                        contentDescription = triggerDescription
+                        stateDescription = positionWorkspaceOverlayStateDescription(
+                            uiState.toolsExpanded,
+                            language,
+                        )
+                    },
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                shape = RoundedCornerShape(18.dp),
+                shadowElevation = 10.dp,
+                tonalElevation = 4.dp,
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_nav_print),
+                        contentDescription = null,
+                        modifier = Modifier.size(25.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PositionWorkspaceEditor(
+    selectedTool: PositionWorkspaceTool?,
+    selectedModel: PlateObject?,
+    selectedModelInsideBed: Boolean?,
+    bedWidth: Double,
+    bedDepth: Double,
+    printableHeight: Double,
+    linkScaleAxes: Boolean,
+    isWorking: Boolean,
+    onLinkScaleAxesChange: (Boolean) -> Unit,
+    onTransformChange: ((PlateObjectTransform) -> PlateObjectTransform) -> Unit,
+    onCenter: () -> Unit,
+    onPlaceOnBed: () -> Unit,
+    onRotate90: () -> Unit,
+    onResetScale: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val language = currentUiLanguage()
     val selectedTransform = selectedModel?.transform
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -2781,67 +3049,6 @@ private fun PositionWorkspaceOverlay(
             }
         }
 
-        androidx.compose.material3.Surface(
-            modifier = Modifier
-                .padding(horizontal = 8.dp)
-                .fillMaxWidth(),
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
-            shape = RoundedCornerShape(20.dp),
-            shadowElevation = 12.dp,
-            tonalElevation = 4.dp,
-        ) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                items(PositionWorkspaceTool.entries, key = PositionWorkspaceTool::name) { tool ->
-                    val enabled = !isWorking && when (tool) {
-                        PositionWorkspaceTool.ARRANGE -> hasModels
-                        else -> selectedModel != null
-                    }
-                    val isSelected = tool == selectedTool
-                    val tint = when {
-                        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                        isSelected -> MaterialTheme.colorScheme.onPrimaryContainer
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                    androidx.compose.material3.Surface(
-                        modifier = Modifier
-                            .width(78.dp)
-                            .clickable(enabled = enabled) { onToolSelected(tool) },
-                        color = if (isSelected) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            Color.Transparent
-                        },
-                        contentColor = tint,
-                        shape = RoundedCornerShape(15.dp),
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(3.dp),
-                        ) {
-                            Icon(
-                                painter = painterResource(tool.icon),
-                                contentDescription = localizeUiText(tool.label, language),
-                                tint = tint,
-                                modifier = Modifier.size(22.dp),
-                            )
-                            Text(
-                                text = localizeUiText(tool.label, language),
-                                color = tint,
-                                fontSize = 9.sp,
-                                lineHeight = 10.sp,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                textAlign = TextAlign.Center,
-                                maxLines = 2,
-                            )
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -3494,24 +3701,47 @@ private fun OrcaSystemCatalogCard(
     activeName: String,
     onApply: (OrcaSystemPrinterProfile) -> Unit,
 ) {
-    var query by remember { mutableStateOf("") }
-    val normalizedQuery = query.trim().lowercase(Locale.getDefault())
-    val matches = catalog.printers.filter { profile ->
-        normalizedQuery.isBlank() || listOf(
-            profile.name,
-            profile.model,
-            profile.vendor,
-            profile.family,
-        ).any { it.lowercase(Locale.getDefault()).contains(normalizedQuery) }
+    var query by remember(catalog) { mutableStateOf("") }
+    var selectedVendor by remember(catalog, activeName) { mutableStateOf<String?>(null) }
+    var selectedModel by remember(catalog, activeName) { mutableStateOf<String?>(null) }
+    var selectedProfileName by remember(catalog, activeName) { mutableStateOf<String?>(null) }
+
+    val matchingProfiles = remember(catalog, query) {
+        OrcaPrinterCatalogSelection.matchingProfiles(catalog, query)
     }
-    val visibleProfiles = matches
-        .sortedWith(
-            compareByDescending<OrcaSystemPrinterProfile> { it.name == activeName }
-                .thenBy { it.vendor.lowercase(Locale.getDefault()) }
-                .thenBy { it.model.lowercase(Locale.getDefault()) }
-                .thenBy { it.nozzleDiameter }
-        )
-        .take(12)
+    val activeProfile = remember(catalog, activeName) {
+        catalog.printers.firstOrNull { it.name == activeName }
+    }
+    val vendors = remember(matchingProfiles) {
+        OrcaPrinterCatalogSelection.vendors(matchingProfiles)
+    }
+    val effectiveVendor = selectedVendor
+        ?.takeIf(vendors::contains)
+        ?: activeProfile?.vendor?.takeIf(vendors::contains)
+        ?: vendors.firstOrNull()
+    val models = remember(matchingProfiles, effectiveVendor) {
+        effectiveVendor?.let { OrcaPrinterCatalogSelection.models(matchingProfiles, it) }.orEmpty()
+    }
+    val activeModel = activeProfile?.model?.ifBlank { activeProfile.name }
+    val effectiveModel = selectedModel
+        ?.takeIf(models::contains)
+        ?: activeModel?.takeIf(models::contains)
+        ?: models.firstOrNull()
+    val profiles = remember(matchingProfiles, effectiveVendor, effectiveModel) {
+        if (effectiveVendor == null || effectiveModel == null) {
+            emptyList()
+        } else {
+            OrcaPrinterCatalogSelection.profiles(
+                profiles = matchingProfiles,
+                vendor = effectiveVendor,
+                model = effectiveModel,
+            )
+        }
+    }
+    val effectiveProfile = selectedProfileName
+        ?.let { selectedName -> profiles.firstOrNull { it.name == selectedName } }
+        ?: activeProfile?.takeIf { it in profiles }
+        ?: profiles.firstOrNull()
 
     SectionCard(title = "Каталог принтеров OrcaSlicer") {
         if (isLoading) {
@@ -3538,43 +3768,134 @@ private fun OrcaSystemCatalogCard(
         )
         Spacer(Modifier.height(10.dp))
 
-        if (matches.isEmpty()) {
+        if (matchingProfiles.isEmpty()) {
             Text("Профили не найдены", color = Muted)
         } else {
             Text(
-                if (matches.size > visibleProfiles.size) {
-                    "Найдено: ${matches.size} · показаны первые ${visibleProfiles.size}"
-                } else {
-                    "Найдено: ${matches.size}"
-                },
+                "Найдено профилей: ${matchingProfiles.size}",
                 color = Muted,
                 fontSize = 12.sp,
             )
-            Spacer(Modifier.height(6.dp))
-            visibleProfiles.forEachIndexed { index, profile ->
-                if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Row(
+            Spacer(Modifier.height(8.dp))
+            CatalogDropdown(
+                label = "Производитель",
+                value = effectiveVendor,
+                options = vendors,
+                optionText = { it },
+                onSelect = { vendor ->
+                    selectedVendor = vendor
+                    selectedModel = null
+                    selectedProfileName = null
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+            CatalogDropdown(
+                label = "Модель",
+                value = effectiveModel,
+                options = models,
+                optionText = { it },
+                onSelect = { model ->
+                    selectedModel = model
+                    selectedProfileName = null
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+            CatalogDropdown(
+                label = "Сопло / профиль",
+                value = effectiveProfile,
+                options = profiles,
+                optionText = { profile ->
+                    "${formatProfileNumber(profile.nozzleDiameter)} мм · ${profile.name}"
+                },
+                onSelect = { profile -> selectedProfileName = profile.name },
+            )
+
+            effectiveProfile?.let { profile ->
+                Spacer(Modifier.height(10.dp))
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp))
+                        .padding(12.dp),
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(profile.name, fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                        Text(
-                            "${profile.vendor} · ${profile.bedWidth.toInt()} × ${profile.bedDepth.toInt()} × " +
-                                "${profile.printableHeight.toInt()} мм · сопло ${formatProfileNumber(profile.nozzleDiameter)} мм",
-                            color = Muted,
-                            fontSize = 12.sp,
-                        )
-                        if (profile.name == activeName) {
-                            Text("Активен", color = Accent, fontSize = 12.sp)
-                        }
-                    }
-                    TextButton(onClick = { onApply(profile) }) {
-                        Text(if (profile.name == activeName) "Выбран" else "Выбрать")
+                    Text(profile.name, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Стол ${profile.bedWidth.toInt()} × ${profile.bedDepth.toInt()} × " +
+                            "${profile.printableHeight.toInt()} мм · сопло " +
+                            "${formatProfileNumber(profile.nozzleDiameter)} мм",
+                        color = Muted,
+                        fontSize = 12.sp,
+                    )
+                    if (profile.name == activeName) {
+                        Text("Активный профиль", color = Accent, fontSize = 12.sp)
                     }
                 }
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = { onApply(profile) },
+                    enabled = profile.name != activeName,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (profile.name == activeName) "Профиль выбран" else "Применить профиль")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun <T> CatalogDropdown(
+    label: String,
+    value: T?,
+    options: List<T>,
+    optionText: (T) -> String,
+    onSelect: (T) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(
+            onClick = { expanded = true },
+            enabled = options.isNotEmpty(),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.Start,
+                ) {
+                    Text(label, color = Muted, fontSize = 11.sp)
+                    Text(
+                        value?.let(optionText) ?: "Нет вариантов",
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                }
+                Text("⌄", fontSize = 18.sp)
+            }
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.widthIn(min = 240.dp, max = 340.dp),
+        ) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            optionText(option),
+                            maxLines = 2,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    },
+                    onClick = {
+                        onSelect(option)
+                        expanded = false
+                    },
+                )
             }
         }
     }
@@ -3953,7 +4274,6 @@ private fun OrcaSliceWorkspace(
     bedDepth: Double,
     darkTheme: Boolean,
     isWorking: Boolean,
-    viewerMessage: String?,
     minimumLayer: Int,
     maximumLayer: Int,
     colorMode: ToolpathColorMode,
@@ -3962,10 +4282,12 @@ private fun OrcaSliceWorkspace(
     progress: Float,
     layerHeightMm: Double,
     cameraResetRequest: Int,
+    initialCameraState: ViewerCameraState?,
     modelObjects: List<ViewerModelObject>,
     selectedObjectId: String?,
     onObjectSelected: (ViewerObjectSelection) -> Unit,
     onSceneState: (ViewerSceneState) -> Unit,
+    onCameraStateChange: (ViewerCameraState) -> Unit,
     onViewerError: (String) -> Unit,
     onSlice: () -> Unit,
     onMinimumLayerChange: (Int) -> Unit,
@@ -3978,31 +4300,65 @@ private fun OrcaSliceWorkspace(
     onSaveGcode: () -> Unit,
     onSendToPrinter: () -> Unit,
     isSendingToPrinter: Boolean,
+    modifier: Modifier = Modifier,
 ) {
     val hasModels = modelObjects.isNotEmpty() || modelFile != null
     val successfulReport = report?.takeIf { it.success }
     if (gcodeFile == null || successfulReport == null) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Surface),
-            shape = RoundedCornerShape(22.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Column(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                if (isWorking) {
-                    // Orca's native pipeline is memory intensive. Releasing the WebView/WebGL
-                    // renderer while it runs avoids keeping a second copy of the model and its
-                    // GPU resources alive at the same time, which can otherwise make Android's
-                    // low-memory killer terminate Feresa on smaller devices.
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(430.dp),
-                        contentAlignment = Alignment.Center,
+        Box(modifier = modifier.fillMaxSize()) {
+            if (!isWorking) {
+                ModelViewer(
+                    modelFile = modelFile,
+                    gcodeFile = null,
+                    transform = transform,
+                    bedWidth = bedWidth,
+                    bedDepth = bedDepth,
+                    mode = ViewerMode.MODEL,
+                    darkTheme = darkTheme,
+                    cameraResetRequest = cameraResetRequest,
+                    initialCameraState = initialCameraState,
+                    modelObjects = modelObjects,
+                    selectedObjectId = selectedObjectId,
+                    onObjectSelected = onObjectSelected,
+                    onSceneState = onSceneState,
+                    onCameraStateChange = onCameraStateChange,
+                    onError = onViewerError,
+                    viewerHeight = null,
+                    showStatus = false,
+                    modifier = Modifier.fillMaxSize(),
+                )
+
+                Button(
+                    onClick = onSlice,
+                    enabled = hasModels,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 24.dp, vertical = 88.dp)
+                        .fillMaxWidth()
+                        .testTag(ModelSliceActionTestTag),
+                ) {
+                    Text("НАРЕЗАТЬ МОДЕЛЬ")
+                }
+            } else {
+                // Orca's native pipeline is memory intensive. Releasing the WebView/WebGL
+                // renderer while it runs avoids keeping a second copy of the model and its
+                // GPU resources alive at the same time, which can otherwise make Android's
+                // low-memory killer terminate Feresa on smaller devices.
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(MaterialTheme.colorScheme.background),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    androidx.compose.material3.Surface(
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                        shape = RoundedCornerShape(20.dp),
+                        shadowElevation = 10.dp,
+                        tonalElevation = 4.dp,
                     ) {
                         Column(
+                            modifier = Modifier.padding(horizontal = 28.dp, vertical = 22.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
@@ -4010,45 +4366,9 @@ private fun OrcaSliceWorkspace(
                             Text("Нарезка модели…", color = Muted, fontSize = 14.sp)
                         }
                     }
-                } else {
-                    ModelViewer(
-                        modelFile = modelFile,
-                        gcodeFile = null,
-                        transform = transform,
-                        bedWidth = bedWidth,
-                        bedDepth = bedDepth,
-                        mode = ViewerMode.MODEL,
-                        darkTheme = darkTheme,
-                        cameraResetRequest = cameraResetRequest,
-                        modelObjects = modelObjects,
-                        selectedObjectId = selectedObjectId,
-                        onObjectSelected = onObjectSelected,
-                        onSceneState = onSceneState,
-                        onError = onViewerError,
-                        viewerHeight = 430.dp,
-                    )
-                }
-                Text(
-                    if (!hasModels) {
-                        "Выберите STL во вкладке «Файл», затем вернитесь сюда для нарезки."
-                    } else {
-                        "Модели готовы. После нарезки здесь появится послойная траектория G-code."
-                    },
-                    color = Muted,
-                    fontSize = 13.sp,
-                )
-                Button(
-                    onClick = onSlice,
-                    enabled = hasModels && !isWorking,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag(ModelSliceActionTestTag),
-                ) {
-                    Text(if (isWorking) "Нарезка…" else "НАРЕЗАТЬ МОДЕЛЬ")
                 }
             }
         }
-        viewerMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
         return
     }
 
@@ -4063,237 +4383,273 @@ private fun OrcaSliceWorkspace(
     val maximumLayerZ = toolpathSelection?.maximumLayerZ ?: (maximumLayer + 1) * layerHeightMm
     val minimumLayerZ = toolpathSelection?.minimumLayerZ ?: (minimumLayer + 1) * layerHeightMm
 
-    Card(
-        colors = CardDefaults.cardColors(containerColor = Surface),
-        shape = RoundedCornerShape(22.dp),
-        modifier = Modifier
-            .fillMaxWidth()
+    Box(
+        modifier = modifier
+            .fillMaxSize()
             .testTag(ModelSliceResultTestTag),
     ) {
-        Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ModelViewer(
+            modelFile = modelFile,
+            gcodeFile = gcodeFile,
+            transform = transform,
+            bedWidth = bedWidth,
+            bedDepth = bedDepth,
+            mode = ViewerMode.TOOLPATH,
+            darkTheme = darkTheme,
+            toolpathMinimumLayer = minimumLayer,
+            toolpathMaximumLayer = maximumLayer,
+            toolpathColorMode = colorMode,
+            toolpathProgress = progress,
+            showExtrusion = showExtrusion,
+            showTravel = showTravel,
+            includeToolpathCommands = gcodeExpanded,
+            cameraResetRequest = cameraResetRequest,
+            initialCameraState = initialCameraState,
+            modelObjects = modelObjects,
+            selectedObjectId = selectedObjectId,
+            onObjectSelected = onObjectSelected,
+            onSceneState = onSceneState,
+            onToolpathRendered = { segmentCount ->
+                renderedSegmentCount = segmentCount.toLong()
+            },
+            onToolpathSelection = { toolpathSelection = it },
+            onCameraStateChange = onCameraStateChange,
+            onError = onViewerError,
+            viewerHeight = null,
+            showStatus = false,
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag(ModelToolpathViewerTestTag)
+                .semantics {
+                    renderedToolpathSegments = renderedSegmentCount
+                },
+        )
+
+        androidx.compose.material3.Surface(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(horizontal = 12.dp, vertical = 12.dp)
+                .fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 10.dp,
+            tonalElevation = 4.dp,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    OutlinedButton(
-                        onClick = { colorMenuExpanded = true },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text(colorMode.label) }
-                    DropdownMenu(
-                        expanded = colorMenuExpanded,
-                        onDismissRequest = { colorMenuExpanded = false },
-                    ) {
-                        ToolpathColorMode.entries.forEach { mode ->
-                            DropdownMenuItem(
-                                text = { Text(mode.label) },
-                                onClick = {
-                                    onColorModeChange(mode)
-                                    colorMenuExpanded = false
-                                },
-                            )
+                item {
+                    Box(modifier = Modifier.width(148.dp)) {
+                        OutlinedButton(
+                            onClick = { colorMenuExpanded = true },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text(colorMode.label, maxLines = 1) }
+                        DropdownMenu(
+                            expanded = colorMenuExpanded,
+                            onDismissRequest = { colorMenuExpanded = false },
+                        ) {
+                            ToolpathColorMode.entries.forEach { mode ->
+                                DropdownMenuItem(
+                                    text = { Text(mode.label) },
+                                    onClick = {
+                                        onColorModeChange(mode)
+                                        colorMenuExpanded = false
+                                    },
+                                )
+                            }
                         }
                     }
                 }
-                OutlinedButton(onClick = onResetCamera) { Text("Вид") }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Печать", fontSize = 12.sp)
-                    Switch(checked = showExtrusion, onCheckedChange = onShowExtrusionChange)
+                item {
+                    OutlinedButton(onClick = onResetCamera) { Text("Вид") }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Перемещения", fontSize = 12.sp)
-                    Switch(checked = showTravel, onCheckedChange = onShowTravelChange)
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Печать", fontSize = 12.sp)
+                        Switch(checked = showExtrusion, onCheckedChange = onShowExtrusionChange)
+                    }
+                }
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Перемещения", fontSize = 12.sp)
+                        Switch(checked = showTravel, onCheckedChange = onShowTravelChange)
+                    }
                 }
             }
+        }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(410.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+        androidx.compose.material3.Surface(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(top = 82.dp, end = 8.dp, bottom = 252.dp)
+                .width(64.dp)
+                .fillMaxHeight(),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            shape = RoundedCornerShape(18.dp),
+            shadowElevation = 8.dp,
+            tonalElevation = 3.dp,
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                ModelViewer(
-                    modelFile = modelFile,
-                    gcodeFile = gcodeFile,
-                    transform = transform,
-                    bedWidth = bedWidth,
-                    bedDepth = bedDepth,
-                    mode = ViewerMode.TOOLPATH,
-                    darkTheme = darkTheme,
-                    toolpathMinimumLayer = minimumLayer,
-                    toolpathMaximumLayer = maximumLayer,
-                    toolpathColorMode = colorMode,
-                    toolpathProgress = progress,
-                    showExtrusion = showExtrusion,
-                    showTravel = showTravel,
-                    includeToolpathCommands = gcodeExpanded,
-                    cameraResetRequest = cameraResetRequest,
-                    modelObjects = modelObjects,
-                    selectedObjectId = selectedObjectId,
-                    onObjectSelected = onObjectSelected,
-                    onSceneState = onSceneState,
-                    onToolpathRendered = { segmentCount ->
-                        renderedSegmentCount = segmentCount.toLong()
-                    },
-                    onToolpathSelection = { toolpathSelection = it },
-                    onError = onViewerError,
-                    viewerHeight = 410.dp,
+                Text(
+                    "${maximumLayer + 1}\n${String.format(Locale.US, "%.2f", maximumLayerZ)}",
+                    textAlign = TextAlign.Center,
+                    color = Accent,
+                    fontSize = 10.sp,
+                )
+                Box(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight()
-                        .testTag(ModelToolpathViewerTestTag)
-                        .semantics {
-                            renderedToolpathSegments = renderedSegmentCount
-                        },
-                )
-                Column(
-                    modifier = Modifier
-                        .width(62.dp)
-                        .fillMaxHeight(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        "${maximumLayer + 1}\n${String.format(Locale.US, "%.2f", maximumLayerZ)}",
-                        textAlign = TextAlign.Center,
-                        color = Accent,
-                        fontSize = 11.sp,
-                    )
-                    Box(
+                    RangeSlider(
+                        value = minimumLayer.coerceIn(0, lastLayer).toFloat()..
+                            maximumLayer.coerceIn(0, lastLayer).toFloat(),
+                        onValueChange = { range ->
+                            onMinimumLayerChange(range.start.roundToInt())
+                            onMaximumLayerChange(range.endInclusive.roundToInt())
+                        },
+                        valueRange = 0f..sliderEnd,
+                        steps = (lastLayer - 1).coerceAtLeast(0),
+                        enabled = lastLayer > 0,
                         modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        RangeSlider(
-                            value = minimumLayer.coerceIn(0, lastLayer).toFloat()..
-                                maximumLayer.coerceIn(0, lastLayer).toFloat(),
-                            onValueChange = { range ->
-                                onMinimumLayerChange(range.start.roundToInt())
-                                onMaximumLayerChange(range.endInclusive.roundToInt())
-                            },
-                            valueRange = 0f..sliderEnd,
-                            steps = (lastLayer - 1).coerceAtLeast(0),
-                            enabled = lastLayer > 0,
-                            modifier = Modifier
-                                .requiredWidth(315.dp)
-                                .graphicsLayer { rotationZ = 270f },
-                        )
-                    }
-                    Text(
-                        "${minimumLayer + 1}\n${String.format(Locale.US, "%.2f", minimumLayerZ)}",
-                        textAlign = TextAlign.Center,
-                        color = Accent,
-                        fontSize = 11.sp,
+                            .requiredWidth(230.dp)
+                            .graphicsLayer { rotationZ = 270f },
                     )
                 }
-            }
-
-            Text(
-                "Ход траектории $displayedSegmentCount / $eligibleSegmentCount",
-                color = Muted,
-                fontSize = 12.sp,
-            )
-            Slider(
-                value = progress.coerceIn(0f, 1f),
-                onValueChange = onProgressChange,
-                valueRange = 0f..1f,
-                enabled = eligibleSegmentCount > 0,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            toolpathSelection?.takeIf { it.selected }?.let { selection ->
-                val lineWidth = selection.lineWidthMm
-                    ?.let { String.format(Locale.US, "%.3f", it) }
-                    ?: "—"
-                val layerHeight = selection.layerHeightMm
-                    ?.let { String.format(Locale.US, "%.3f", it) }
-                    ?: "—"
                 Text(
-                    String.format(
-                        Locale.US,
-                        "X %.2f   Y %.2f   Z %.2f мм\nСкорость %.0f мм/с · Тип: %s\nШирина %s мм · Высота слоя %s мм",
-                        selection.x,
-                        selection.y,
-                        selection.z,
-                        selection.speedMmSeconds,
-                        selection.lineTypeLabel,
-                        lineWidth,
-                        layerHeight,
-                    ),
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 13.sp,
+                    "${minimumLayer + 1}\n${String.format(Locale.US, "%.2f", minimumLayerZ)}",
+                    textAlign = TextAlign.Center,
+                    color = Accent,
+                    fontSize = 10.sp,
                 )
             }
+        }
 
-            OutlinedButton(
-                onClick = { gcodeExpanded = !gcodeExpanded },
-                modifier = Modifier.fillMaxWidth(),
+        androidx.compose.material3.Surface(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(start = 8.dp, end = 8.dp, bottom = 82.dp)
+                .fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 10.dp,
+            tonalElevation = 4.dp,
+        ) {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 240.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(7.dp),
             ) {
-                Text(if (gcodeExpanded) "Скрыть команды G-code" else "Показать команды G-code")
-            }
-            if (gcodeExpanded) {
-                val commands = toolpathSelection?.commands.orEmpty()
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF202220), RoundedCornerShape(12.dp))
-                        .padding(10.dp),
+                Text(
+                    "Ход траектории $displayedSegmentCount / $eligibleSegmentCount",
+                    color = Muted,
+                    fontSize = 12.sp,
+                )
+                Slider(
+                    value = progress.coerceIn(0f, 1f),
+                    onValueChange = onProgressChange,
+                    valueRange = 0f..1f,
+                    enabled = eligibleSegmentCount > 0,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                toolpathSelection?.takeIf { it.selected }?.let { selection ->
+                    val lineWidth = selection.lineWidthMm
+                        ?.let { String.format(Locale.US, "%.3f", it) }
+                        ?: "—"
+                    val layerHeight = selection.layerHeightMm
+                        ?.let { String.format(Locale.US, "%.3f", it) }
+                        ?: "—"
+                    Text(
+                        String.format(
+                            Locale.US,
+                            "X %.2f   Y %.2f   Z %.2f мм\nСкорость %.0f мм/с · Тип: %s\nШирина %s мм · Высота слоя %s мм",
+                            selection.x,
+                            selection.y,
+                            selection.z,
+                            selection.speedMmSeconds,
+                            selection.lineTypeLabel,
+                            lineWidth,
+                            layerHeight,
+                        ),
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 12.sp,
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = { gcodeExpanded = !gcodeExpanded },
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
-                    if (commands.isEmpty()) {
-                        Text("Нет видимых команд", color = Color(0xFFCDD5D0), fontFamily = FontFamily.Monospace)
-                    } else {
-                        commands.forEach { command ->
+                    Text(if (gcodeExpanded) "Скрыть команды G-code" else "Показать команды G-code")
+                }
+                if (gcodeExpanded) {
+                    val commands = toolpathSelection?.commands.orEmpty()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF202220), RoundedCornerShape(12.dp))
+                            .padding(10.dp),
+                    ) {
+                        if (commands.isEmpty()) {
                             Text(
-                                "${command.lineNumber.toString().padStart(6)}  ${command.source}",
-                                color = if (command.active) Color(0xFFFFA15A) else Color(0xFFD6DDD8),
+                                "Нет видимых команд",
+                                color = Color(0xFFCDD5D0),
                                 fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                maxLines = 1,
                             )
+                        } else {
+                            commands.forEach { command ->
+                                Text(
+                                    "${command.lineNumber.toString().padStart(6)}  ${command.source}",
+                                    color = if (command.active) Color(0xFFFFA15A) else Color(0xFFD6DDD8),
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                )
+                            }
                         }
                     }
                 }
-            }
 
-            Text(
-                "${successfulReport.layers} слоёв · ${successfulReport.extrusionSegments} сегментов · ${formatPrintDuration(successfulReport.estimatedPrintTimeSeconds)}",
-                color = Muted,
-                fontSize = 12.sp,
-            )
-            Text(
-                "Прочитано ${toolpathSelection?.lineCount ?: 0} строк G-code",
-                color = Muted,
-                fontSize = 11.sp,
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedButton(onClick = onSaveGcode, modifier = Modifier.weight(1f)) {
-                    Text("Сохранить")
-                }
-                Button(
-                    onClick = onSendToPrinter,
-                    enabled = !isSendingToPrinter,
-                    modifier = Modifier.weight(1f),
+                Text(
+                    "${successfulReport.layers} слоёв · ${successfulReport.extrusionSegments} сегментов · ${formatPrintDuration(successfulReport.estimatedPrintTimeSeconds)}",
+                    color = Muted,
+                    fontSize = 12.sp,
+                )
+                Text(
+                    "Прочитано ${toolpathSelection?.lineCount ?: 0} строк G-code",
+                    color = Muted,
+                    fontSize = 11.sp,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(if (isSendingToPrinter) "Отправка…" else "На печать")
+                    OutlinedButton(onClick = onSaveGcode, modifier = Modifier.weight(1f)) {
+                        Text("Сохранить")
+                    }
+                    Button(
+                        onClick = onSendToPrinter,
+                        enabled = !isSendingToPrinter,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(if (isSendingToPrinter) "Отправка…" else "На печать")
+                    }
                 }
             }
         }
     }
-    viewerMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
 }
 
 @Composable

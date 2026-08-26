@@ -3,20 +3,20 @@ package tech.g24.feresaslicer.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -137,13 +137,58 @@ internal fun CameraViewPresetOverlay(
             )
         }
 
-        Column(
+        Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 12.dp),
-            horizontalAlignment = Alignment.End,
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            AnimatedVisibility(
+                visible = uiState.expanded,
+                modifier = Modifier.weight(1f),
+                enter = fadeIn() + expandHorizontally(expandFrom = Alignment.End),
+                exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.End),
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // Consume taps in tray padding so they are not treated as outside taps.
+                        .clickable(
+                            interactionSource = panelInteractionSource,
+                            indication = null,
+                            onClick = {},
+                        ),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    shape = RoundedCornerShape(20.dp),
+                    shadowElevation = 10.dp,
+                    tonalElevation = 4.dp,
+                ) {
+                    LazyRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics {
+                                contentDescription = cameraViewOverlayPanelDescription(language)
+                            },
+                        contentPadding = PaddingValues(horizontal = 7.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        items(cameraViewOverlayActions, key = CameraViewOverlayAction::stableKey) { action ->
+                            CameraViewOverlayItem(
+                                action = action,
+                                selected = cameraViewOverlayActionIsSelected(action, selectedPreset),
+                                language = language,
+                                onClick = { select(action) },
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.width(8.dp))
+
             val triggerDescription = cameraViewOverlayTriggerDescription(uiState.expanded, language)
             Surface(
                 modifier = Modifier
@@ -171,50 +216,6 @@ internal fun CameraViewPresetOverlay(
                         contentDescription = null,
                         modifier = Modifier.size(25.dp),
                     )
-                }
-            }
-
-            AnimatedVisibility(
-                visible = uiState.expanded,
-                enter = fadeIn() + expandVertically(expandFrom = Alignment.Top),
-                exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Top),
-            ) {
-                Column {
-                    Spacer(Modifier.height(8.dp))
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            // Consume taps in tray padding so they are not treated as outside taps.
-                            .clickable(
-                                interactionSource = panelInteractionSource,
-                                indication = null,
-                                onClick = {},
-                            ),
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                        shape = RoundedCornerShape(20.dp),
-                        shadowElevation = 10.dp,
-                        tonalElevation = 4.dp,
-                    ) {
-                        LazyRow(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .semantics {
-                                    contentDescription = cameraViewOverlayPanelDescription(language)
-                                },
-                            contentPadding = PaddingValues(horizontal = 7.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            items(cameraViewOverlayActions, key = CameraViewOverlayAction::stableKey) { action ->
-                                CameraViewOverlayItem(
-                                    action = action,
-                                    selected = cameraViewOverlayActionIsSelected(action, selectedPreset),
-                                    language = language,
-                                    onClick = { select(action) },
-                                )
-                            }
-                        }
-                    }
                 }
             }
         }

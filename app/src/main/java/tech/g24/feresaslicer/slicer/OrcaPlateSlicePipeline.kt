@@ -47,6 +47,7 @@ object OrcaPlateSlicePipeline {
         liveProcessSettings: OrcaProcessSettingsPayload,
         baseSettings: SlicerSettings,
         files: OrcaPlateSliceFiles,
+        modelNames: List<String> = placements.map { it.file.nameWithoutExtension },
         onProgress: ((progress: Int, stage: String) -> Unit)? = null,
     ): OrcaPlateSliceResult = slice(
         placements = placements,
@@ -55,6 +56,7 @@ object OrcaPlateSlicePipeline {
         liveProcessSettings = liveProcessSettings,
         baseSettings = baseSettings,
         files = files,
+        modelNames = modelNames,
         onProgress = onProgress,
         engine = OrcaPlateSliceEngine { inputPath, configPath, outputPath, settings, callback ->
             OrcaNativeEngine().sliceModel(
@@ -65,6 +67,7 @@ object OrcaPlateSlicePipeline {
                 onProgress = callback,
             )
         },
+        artifactEnhancer = FeresaAndroidGcodeArtifactEnhancer,
     )
 
     internal fun slice(
@@ -74,8 +77,10 @@ object OrcaPlateSlicePipeline {
         liveProcessSettings: OrcaProcessSettingsPayload,
         baseSettings: SlicerSettings,
         files: OrcaPlateSliceFiles,
+        modelNames: List<String> = placements.map { it.file.nameWithoutExtension },
         onProgress: ((progress: Int, stage: String) -> Unit)? = null,
         engine: OrcaPlateSliceEngine,
+        artifactEnhancer: OrcaGcodeArtifactEnhancer = NoOpGcodeArtifactEnhancer,
     ): OrcaPlateSliceResult {
         require(placements.isNotEmpty()) { "At least one model is required for slicing" }
         placements.forEach { placement ->
@@ -103,13 +108,36 @@ object OrcaPlateSlicePipeline {
             // Z=0 here would silently undo intentionally raised objects and support scenarios.
             ensureModelOnBed = false,
         )
-        val report = engine.slice(
+        val nativeReport = engine.slice(
             inputPath = composition.file.path,
             configPath = files.config.path,
             outputPath = files.gcode.path,
             settings = preparedSettings,
             onProgress = onProgress,
         )
+        val enhancementFailure = if (nativeReport.success) {
+            runCatching {
+                artifactEnhancer.enhance(
+                    OrcaGcodeEnhancementRequest(
+                        gcode = files.gcode,
+                        report = nativeReport,
+                        modelNames = modelNames.filter(String::isNotBlank).distinct()
+                            .ifEmpty { placements.map { it.file.nameWithoutExtension }.distinct() },
+                        profiles = profiles,
+                        nativeSettings = dynamicConfig.settings,
+                    ),
+                )
+            }.exceptionOrNull()
+        } else {
+            null
+        }
+        val report = if (enhancementFailure == null) {
+            nativeReport
+        } else {
+            nativeReport.copy(
+                message = "${nativeReport.message}; preview metadata could not be embedded",
+            )
+        }
         return OrcaPlateSliceResult(
             report = report,
             composition = composition,
