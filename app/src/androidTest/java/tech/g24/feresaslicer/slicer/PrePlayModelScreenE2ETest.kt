@@ -8,7 +8,6 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
@@ -83,7 +82,7 @@ class PrePlayModelScreenE2ETest {
                 .isNotEmpty()
         }
         composeRule.onNodeWithTag(ModelSliceActionTestTag)
-            .performScrollTo()
+            .assertIsDisplayed()
             .assertIsEnabled()
             .performClick()
 
@@ -100,7 +99,6 @@ class PrePlayModelScreenE2ETest {
                 .isNotEmpty()
         }
         composeRule.onNodeWithTag(ModelToolpathViewerTestTag)
-            .performScrollTo()
             .assertIsDisplayed()
         composeRule.waitUntil(timeoutMillis = TOOLPATH_RENDER_TIMEOUT_MS) {
             composeRule.onAllNodesWithTag(ModelToolpathViewerTestTag)
