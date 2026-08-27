@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
     createLatestRequestGate,
@@ -48,4 +49,24 @@ test("disposing an Object3D subtree releases shared GPU resources once", () => {
 test("disposing an empty resource tree is a no-op", () => {
     assert.doesNotThrow(() => disposeObject3DResources(null));
     assert.doesNotThrow(() => disposeObject3DResources({}));
+});
+
+test("the public viewer dispose contract releases browser and WebGL resources", () => {
+    const source = readFileSync(new URL("./viewer.js", import.meta.url), "utf8");
+
+    assert.match(source, /dispose:\s*disposeViewer/);
+    assert.match(source, /if \(disposed\) return false/);
+    assert.match(source, /resizeObserver\?\.disconnect\(\)/);
+    assert.match(source, /controls\.dispose\(\)/);
+    assert.match(source, /disposeLoadedModels\(\)/);
+    assert.match(source, /disposeToolpathLines\(\)/);
+    assert.match(source, /disposeObject3DResources\(bedGroup\)/);
+    assert.match(source, /rendererToDispose\.dispose\(\)/);
+    assert.match(source, /rendererToDispose\.forceContextLoss\(\)/);
+});
+
+test("the mobile viewer caps WebGL pixel density", () => {
+    const source = readFileSync(new URL("./viewer.js", import.meta.url), "utf8");
+
+    assert.match(source, /Math\.min\(window\.devicePixelRatio \|\| 1, 1\.5\)/);
 });

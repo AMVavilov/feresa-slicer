@@ -23,11 +23,12 @@ class CameraViewPresetOverlayTest {
     }
 
     @Test
-    fun dismissAndSelectionAlwaysCloseOverlay() {
+    fun selectionKeepsTheOverlayOpenUntilExplicitlyDismissed() {
         val opened = CameraViewPresetOverlayUiState(expanded = true)
 
         assertFalse(opened.reduce(CameraViewPresetOverlayEvent.Dismiss).expanded)
-        assertFalse(opened.reduce(CameraViewPresetOverlayEvent.ActionSelected).expanded)
+        assertTrue(opened.reduce(CameraViewPresetOverlayEvent.ActionSelected).expanded)
+        assertFalse(CameraViewPresetOverlayUiState().reduce(CameraViewPresetOverlayEvent.ActionSelected).expanded)
     }
 
     @Test

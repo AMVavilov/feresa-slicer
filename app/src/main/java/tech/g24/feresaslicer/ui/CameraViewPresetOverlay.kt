@@ -17,7 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -44,11 +44,15 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import tech.g24.feresaslicer.R
+
+internal const val CameraViewOverlayTriggerTestTag = "camera-view-overlay-trigger"
+internal const val CameraViewOverlayPanelTestTag = "camera-view-overlay-panel"
 
 /** Actions exposed by the camera overlay. Fit and bed are deliberately not camera presets. */
 internal sealed interface CameraViewOverlayAction {
@@ -77,22 +81,22 @@ internal enum class CameraViewPresetOverlayEvent {
     ActionSelected,
 }
 
-/** Pure state model kept separate so default, outside-tap, Back and selection behavior is testable. */
+/** Pure state model kept separate so default, Back and selection behavior is testable. */
 internal data class CameraViewPresetOverlayUiState(
     val expanded: Boolean = false,
 ) {
     fun reduce(event: CameraViewPresetOverlayEvent): CameraViewPresetOverlayUiState = when (event) {
         CameraViewPresetOverlayEvent.Toggle -> copy(expanded = !expanded)
-        CameraViewPresetOverlayEvent.Dismiss,
-        CameraViewPresetOverlayEvent.ActionSelected,
-        -> copy(expanded = false)
+        CameraViewPresetOverlayEvent.Dismiss -> copy(expanded = false)
+        CameraViewPresetOverlayEvent.ActionSelected -> this
     }
 }
 
 /**
  * A full-canvas overlay: while collapsed only the top-right camera button handles input.
- * When expanded, tapping outside the tray or pressing Back closes it. Selecting any item closes
- * the tray before dispatching the requested camera action.
+ * Selecting a view keeps the tray open so several camera presets can be compared in succession.
+ * The tray closes only through its trigger or Android Back, leaving the rest of the canvas free for
+ * rotate, pan, zoom, and model selection gestures while it is visible.
  */
 @Composable
 internal fun CameraViewPresetOverlay(
@@ -104,7 +108,6 @@ internal fun CameraViewPresetOverlay(
 ) {
     var uiState by remember { mutableStateOf(CameraViewPresetOverlayUiState()) }
     val language = currentUiLanguage()
-    val dismissInteractionSource = remember { MutableInteractionSource() }
     val panelInteractionSource = remember { MutableInteractionSource() }
 
     fun dispatch(event: CameraViewPresetOverlayEvent) {
@@ -125,23 +128,11 @@ internal fun CameraViewPresetOverlay(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        if (uiState.expanded) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .clickable(
-                        interactionSource = dismissInteractionSource,
-                        indication = null,
-                        onClick = { dispatch(CameraViewPresetOverlayEvent.Dismiss) },
-                    ),
-            )
-        }
-
         Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 12.dp),
+                .padding(horizontal = 12.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -154,7 +145,7 @@ internal fun CameraViewPresetOverlay(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        // Consume taps in tray padding so they are not treated as outside taps.
+                        // Keep tray padding inert without affecting gestures outside the tray.
                         .clickable(
                             interactionSource = panelInteractionSource,
                             indication = null,
@@ -169,10 +160,11 @@ internal fun CameraViewPresetOverlay(
                     LazyRow(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .testTag(CameraViewOverlayPanelTestTag)
                             .semantics {
                                 contentDescription = cameraViewOverlayPanelDescription(language)
                             },
-                        contentPadding = PaddingValues(horizontal = 7.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 7.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
                         items(cameraViewOverlayActions, key = CameraViewOverlayAction::stableKey) { action ->
@@ -193,6 +185,7 @@ internal fun CameraViewPresetOverlay(
             Surface(
                 modifier = Modifier
                     .size(52.dp)
+                    .testTag(CameraViewOverlayTriggerTestTag)
                     .clip(RoundedCornerShape(18.dp))
                     .semantics {
                         role = Role.Button
@@ -239,7 +232,7 @@ private fun CameraViewOverlayItem(
     Surface(
         modifier = Modifier
             .width(76.dp)
-            .heightIn(min = 64.dp)
+            .height(48.dp)
             .clip(RoundedCornerShape(15.dp))
             .semantics(mergeDescendants = true) {
                 role = Role.Button
@@ -260,15 +253,18 @@ private fun CameraViewOverlayItem(
         shape = RoundedCornerShape(15.dp),
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 7.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 4.dp, vertical = 3.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(3.dp),
+            verticalArrangement = Arrangement.Center,
         ) {
             Icon(
                 painter = painterResource(cameraViewOverlayIcon(action)),
                 contentDescription = null,
-                modifier = Modifier.size(21.dp),
+                modifier = Modifier.size(20.dp),
             )
+            Spacer(Modifier.size(2.dp))
             Text(
                 text = visualLabel,
                 fontSize = 10.sp,

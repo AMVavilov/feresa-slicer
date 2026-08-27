@@ -142,3 +142,28 @@ export function objectSelectionPayload(objectId, source = "api") {
         source: source === "pointer" ? "pointer" : "api",
     };
 }
+
+export function shouldReportObjectSelection(changed, source = "api") {
+    return Boolean(changed) || source === "pointer";
+}
+
+export function pointerGestureIsTap({
+    isPrimary,
+    button,
+    maximumDistance,
+    durationMs,
+    hadMultiplePointers,
+    cameraChanged = false,
+    maximumTapDistance = 8,
+    maximumTapDurationMs = 500,
+}) {
+    return Boolean(isPrimary) &&
+        (button === 0 || button === -1) &&
+        Number.isFinite(maximumDistance) &&
+        maximumDistance <= maximumTapDistance &&
+        Number.isFinite(durationMs) &&
+        durationMs >= 0 &&
+        durationMs <= maximumTapDurationMs &&
+        !hadMultiplePointers &&
+        !cameraChanged;
+}

@@ -23,6 +23,27 @@ internal data class PositionWorkspaceOverlayUiState(
     }
 }
 
+internal enum class PositionControlsViewerSelectionEffect {
+    NONE,
+    OPEN_POSITION,
+    CLOSE,
+}
+
+internal fun positionWorkspaceOverlayIsActive(
+    state: PositionWorkspaceOverlayUiState,
+    positionEditorOpen: Boolean,
+): Boolean = state.toolsExpanded || positionEditorOpen
+
+internal fun positionControlsViewerSelectionEffect(
+    selection: ViewerObjectSelection,
+    positionWorkspaceActive: Boolean,
+): PositionControlsViewerSelectionEffect = when {
+    !positionWorkspaceActive || selection.source != "pointer" ->
+        PositionControlsViewerSelectionEffect.NONE
+    selection.objectId == null -> PositionControlsViewerSelectionEffect.CLOSE
+    else -> PositionControlsViewerSelectionEffect.OPEN_POSITION
+}
+
 internal fun positionWorkspaceOverlayTriggerDescription(
     expanded: Boolean,
     language: UiLanguage,

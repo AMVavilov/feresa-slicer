@@ -15,9 +15,11 @@ object ModelDocumentPolicy {
     private val modelMimeTypes = linkedSetOf(
         "model/stl",
         "application/sla",
+        "application/vnd.ms-pki.stl",
         "model/obj",
         "application/x-tgif",
         "model/3mf",
+        "application/vnd.ms-3mfdocument",
         "application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
         "application/x-3mf",
     )

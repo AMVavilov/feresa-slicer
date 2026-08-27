@@ -36,6 +36,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 data class ModelTransform(
@@ -494,6 +496,17 @@ fun ModelViewer(
     val resources = remember { ViewerResources(context.applicationContext) }
     var webView by remember { mutableStateOf<WebView?>(null) }
     var rendererLifecycle by remember { mutableStateOf(ViewerRendererLifecycle()) }
+    val rendererDisposing = remember { AtomicBoolean(false) }
+    val destroyedWebViews = remember { ConcurrentHashMap.newKeySet<WebView>() }
+    val viewerMainHandler = remember { Handler(Looper.getMainLooper()) }
+
+    fun destroyWebViewOnce(view: WebView?) {
+        if (view == null || !destroyedWebViews.add(view)) return
+        runCatching { view.stopLoading() }
+        runCatching { view.removeJavascriptInterface("AndroidBridge") }
+        runCatching { view.destroy() }
+    }
+
     val viewerReady = rendererLifecycle.ready
     val rendererGeneration = rendererLifecycle.generation
     val currentOnSceneState by rememberUpdatedState(onSceneState)
@@ -526,6 +539,7 @@ fun ModelViewer(
                     settings.allowContentAccess = false
                     settings.allowFileAccess = false
                     settings.mediaPlaybackRequiresUserGesture = true
+                    setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
                     addJavascriptInterface(bridge, "AndroidBridge")
                     webViewClient = object : WebViewClient() {
                         override fun onRenderProcessGone(
@@ -534,11 +548,11 @@ fun ModelViewer(
                         ): Boolean {
                             val callbackIsCurrent = rendererLifecycle.generation == rendererGeneration
                             val failedView = view ?: webView.takeIf { callbackIsCurrent }
-                            failedView?.removeJavascriptInterface("AndroidBridge")
-                            failedView?.destroy()
+                            destroyWebViewOnce(failedView)
+                            if (webView === failedView) webView = null
+                            if (rendererDisposing.get()) return true
                             val nextLifecycle = rendererLifecycle.onRenderProcessGone(rendererGeneration)
                             if (nextLifecycle.generation != rendererLifecycle.generation) {
-                                if (webView === failedView) webView = null
                                 rendererLifecycle = nextLifecycle
                                 currentOnError("3D renderer stopped and is restarting.")
                             }
@@ -779,9 +793,26 @@ fun ModelViewer(
 
     DisposableEffect(Unit) {
         onDispose {
-            webView?.removeJavascriptInterface("AndroidBridge")
-            webView?.destroy()
+            rendererDisposing.set(true)
+            val view = webView
             webView = null
+            if (view != null) {
+                val destroyFallback = Runnable { destroyWebViewOnce(view) }
+                viewerMainHandler.postDelayed(destroyFallback, VIEWER_DISPOSE_FALLBACK_MILLIS)
+                runCatching {
+                    view.evaluateJavascript(
+                        "window.FeresaSlicerViewer?.dispose?.()",
+                    ) {
+                        viewerMainHandler.removeCallbacks(destroyFallback)
+                        destroyFallback.run()
+                    }
+                }.onFailure {
+                    viewerMainHandler.removeCallbacks(destroyFallback)
+                    destroyFallback.run()
+                }
+            }
         }
     }
 }
+
+private const val VIEWER_DISPOSE_FALLBACK_MILLIS = 250L

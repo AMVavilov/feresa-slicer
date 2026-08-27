@@ -85,6 +85,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.SemanticsPropertyKey
 import androidx.compose.ui.semantics.SemanticsPropertyReceiver
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -190,6 +191,9 @@ private val DarkColors = darkColorScheme(
 internal const val ModelSliceActionTestTag = "model-slice-action"
 internal const val ModelSliceResultTestTag = "model-slice-result"
 internal const val ModelToolpathViewerTestTag = "model-toolpath-viewer"
+internal const val PositionWorkspaceEditorTestTag = "position-workspace-editor"
+internal const val PositionWorkspaceTriggerTestTag = "position-workspace-trigger"
+internal const val ModelWorkspaceNavigationTestTag = "model-workspace-navigation"
 internal val RenderedToolpathSegmentsKey = SemanticsPropertyKey<Long>("RenderedToolpathSegments")
 internal var SemanticsPropertyReceiver.renderedToolpathSegments by RenderedToolpathSegmentsKey
 
@@ -236,7 +240,7 @@ private enum class ModelWorkspaceSection(val label: String, val icon: Int) {
     SLICE("Нарезка", R.drawable.ic_workspace_slice),
 }
 
-private enum class PositionWorkspaceTool(val label: String, val icon: Int) {
+internal enum class PositionWorkspaceTool(val label: String, val icon: Int) {
     ARRANGE("Расставить", R.drawable.ic_nav_model),
     AUTO_ORIENT("Автоориент. (бета)", R.drawable.ic_nav_print),
     POSITION("Позиция", R.drawable.ic_nav_profiles),
@@ -538,6 +542,22 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
         if (selectedId == null || plateWorkspace.objectOrNull(selectedId) != null) {
             plateWorkspace = plateWorkspace.select(selectedId)
             viewerSceneState = null
+            when (
+                positionControlsViewerSelectionEffect(
+                    selection = selection,
+                    positionWorkspaceActive = destination == AppDestination.MODEL &&
+                        modelWorkspaceSection == ModelWorkspaceSection.POSITION,
+                )
+            ) {
+                PositionControlsViewerSelectionEffect.NONE -> Unit
+                PositionControlsViewerSelectionEffect.OPEN_POSITION -> {
+                    selectedPositionTool = PositionWorkspaceTool.POSITION
+                }
+
+                PositionControlsViewerSelectionEffect.CLOSE -> {
+                    selectedPositionTool = null
+                }
+            }
         }
     }
 
@@ -1256,6 +1276,12 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
                                     it.copy(scale = 1.0, scaleX = 1.0, scaleY = 1.0, scaleZ = 1.0)
                                 }
                             },
+                            workspaceNavigation = {
+                                ModelWorkspaceNavigation(
+                                    selected = modelWorkspaceSection,
+                                    onSelect = { modelWorkspaceSection = it },
+                                )
+                            },
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
@@ -1285,11 +1311,13 @@ fun FeresaSlicerApp(initialPlateWorkspace: PlateWorkspace? = null) {
                             )
                         }
                     }
-                    ModelWorkspaceNavigation(
-                        selected = modelWorkspaceSection,
-                        onSelect = { modelWorkspaceSection = it },
-                        modifier = Modifier.align(Alignment.BottomCenter),
-                    )
+                    if (modelWorkspaceSection != ModelWorkspaceSection.POSITION) {
+                        ModelWorkspaceNavigation(
+                            selected = modelWorkspaceSection,
+                            onSelect = { modelWorkspaceSection = it },
+                            modifier = Modifier.align(Alignment.BottomCenter),
+                        )
+                    }
                 }
             } else {
             Column(
@@ -2611,7 +2639,7 @@ private fun ThemeModeSelector(
 }
 
 @Composable
-private fun PositionWorkspaceOverlay(
+internal fun PositionWorkspaceOverlay(
     selectedTool: PositionWorkspaceTool?,
     selectedModel: PlateObject?,
     selectedModelInsideBed: Boolean?,
@@ -2628,12 +2656,16 @@ private fun PositionWorkspaceOverlay(
     onPlaceOnBed: () -> Unit,
     onRotate90: () -> Unit,
     onResetScale: () -> Unit,
+    workspaceNavigation: @Composable () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val language = currentUiLanguage()
     var uiState by remember { mutableStateOf(PositionWorkspaceOverlayUiState()) }
-    val dismissInteractionSource = remember { MutableInteractionSource() }
     val trayInteractionSource = remember { MutableInteractionSource() }
+    val overlayActive = positionWorkspaceOverlayIsActive(
+        state = uiState,
+        positionEditorOpen = selectedTool != null,
+    )
 
     fun dispatch(event: PositionWorkspaceOverlayEvent) {
         uiState = uiState.reduce(event)
@@ -2644,37 +2676,30 @@ private fun PositionWorkspaceOverlay(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        if (uiState.toolsExpanded) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .clickable(
-                        interactionSource = dismissInteractionSource,
-                        indication = null,
-                        onClick = { dispatch(PositionWorkspaceOverlayEvent.DismissTools) },
-                    ),
-            )
-        }
-
-        PositionWorkspaceEditor(
-            selectedTool = selectedTool,
-            selectedModel = selectedModel,
-            selectedModelInsideBed = selectedModelInsideBed,
-            bedWidth = bedWidth,
-            bedDepth = bedDepth,
-            printableHeight = printableHeight,
-            linkScaleAxes = linkScaleAxes,
-            isWorking = isWorking,
-            onLinkScaleAxesChange = onLinkScaleAxesChange,
-            onTransformChange = onTransformChange,
-            onCenter = onCenter,
-            onPlaceOnBed = onPlaceOnBed,
-            onRotate90 = onRotate90,
-            onResetScale = onResetScale,
+        Column(
             modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 72.dp),
-        )
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            PositionWorkspaceEditor(
+                selectedTool = selectedTool,
+                selectedModel = selectedModel,
+                selectedModelInsideBed = selectedModelInsideBed,
+                bedWidth = bedWidth,
+                bedDepth = bedDepth,
+                printableHeight = printableHeight,
+                linkScaleAxes = linkScaleAxes,
+                isWorking = isWorking,
+                onLinkScaleAxesChange = onLinkScaleAxesChange,
+                onTransformChange = onTransformChange,
+                onCenter = onCenter,
+                onPlaceOnBed = onPlaceOnBed,
+                onRotate90 = onRotate90,
+                onResetScale = onResetScale,
+            )
+            workspaceNavigation()
+        }
 
         Row(
             modifier = Modifier
@@ -2780,15 +2805,25 @@ private fun PositionWorkspaceOverlay(
                 onClick = { dispatch(PositionWorkspaceOverlayEvent.ToggleTools) },
                 modifier = Modifier
                     .size(52.dp)
+                    .testTag(PositionWorkspaceTriggerTestTag)
                     .semantics {
                         contentDescription = triggerDescription
                         stateDescription = positionWorkspaceOverlayStateDescription(
                             uiState.toolsExpanded,
                             language,
                         )
+                        selected = overlayActive
                     },
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
-                contentColor = MaterialTheme.colorScheme.onSurface,
+                color = if (overlayActive) {
+                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.96f)
+                } else {
+                    MaterialTheme.colorScheme.surface.copy(alpha = 0.96f)
+                },
+                contentColor = if (overlayActive) {
+                    MaterialTheme.colorScheme.onPrimaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
                 shape = RoundedCornerShape(18.dp),
                 shadowElevation = 10.dp,
                 tonalElevation = 4.dp,
@@ -2841,7 +2876,8 @@ private fun PositionWorkspaceEditor(
             androidx.compose.material3.Surface(
                 modifier = Modifier
                     .padding(horizontal = 12.dp)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .testTag(PositionWorkspaceEditorTestTag),
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f),
                 shape = RoundedCornerShape(20.dp),
                 shadowElevation = 12.dp,
@@ -2849,10 +2885,10 @@ private fun PositionWorkspaceEditor(
             ) {
                 Column(
                     modifier = Modifier
-                        .heightIn(max = 300.dp)
+                        .heightIn(max = 252.dp)
                         .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -2879,7 +2915,7 @@ private fun PositionWorkspaceEditor(
 
                     when (selectedTool) {
                         PositionWorkspaceTool.POSITION -> {
-                            TransformSlider(
+                            CompactTransformSlider(
                                 label = localizeUiText("Позиция X", language),
                                 value = selectedTransform.positionXmm,
                                 range = 0f..bedWidth.toFloat(),
@@ -2889,7 +2925,7 @@ private fun PositionWorkspaceEditor(
                                     onTransformChange { it.copy(positionXmm = value) }
                                 },
                             )
-                            TransformSlider(
+                            CompactTransformSlider(
                                 label = localizeUiText("Позиция Y", language),
                                 value = selectedTransform.positionYmm,
                                 range = 0f..bedDepth.toFloat(),
@@ -2899,7 +2935,7 @@ private fun PositionWorkspaceEditor(
                                     onTransformChange { it.copy(positionYmm = value) }
                                 },
                             )
-                            TransformSlider(
+                            CompactTransformSlider(
                                 label = localizeUiText("Позиция Z", language),
                                 value = selectedTransform.positionZmm,
                                 range = 0f..printableHeight.toFloat(),
@@ -2927,7 +2963,7 @@ private fun PositionWorkspaceEditor(
                         }
 
                         PositionWorkspaceTool.ROTATION -> {
-                            TransformSlider(
+                            CompactTransformSlider(
                                 label = localizeUiText("Поворот X", language),
                                 value = selectedTransform.rotationXDegrees,
                                 range = 0f..360f,
@@ -2937,7 +2973,7 @@ private fun PositionWorkspaceEditor(
                                     onTransformChange { it.copy(rotationXDegrees = value) }
                                 },
                             )
-                            TransformSlider(
+                            CompactTransformSlider(
                                 label = localizeUiText("Поворот Y", language),
                                 value = selectedTransform.rotationYDegrees,
                                 range = 0f..360f,
@@ -2947,7 +2983,7 @@ private fun PositionWorkspaceEditor(
                                     onTransformChange { it.copy(rotationYDegrees = value) }
                                 },
                             )
-                            TransformSlider(
+                            CompactTransformSlider(
                                 label = localizeUiText("Поворот Z", language),
                                 value = selectedTransform.rotationZDegrees,
                                 range = 0f..360f,
@@ -2981,7 +3017,7 @@ private fun PositionWorkspaceEditor(
                                 )
                             }
                             if (linkScaleAxes) {
-                                TransformSlider(
+                                CompactTransformSlider(
                                     label = localizeUiText("Масштаб", language),
                                     value = selectedTransform.effectiveScaleX,
                                     range = 0.1f..3f,
@@ -3017,7 +3053,7 @@ private fun PositionWorkspaceEditor(
                                         PlateAxis.Z,
                                     ),
                                 ).forEach { (label, value, axis) ->
-                                    TransformSlider(
+                                    CompactTransformSlider(
                                         label = label,
                                         value = value,
                                         range = 0.1f..3f,
@@ -3067,6 +3103,7 @@ private fun ModelWorkspaceNavigation(
     androidx.compose.material3.Surface(
         modifier = modifier
             .fillMaxWidth()
+            .testTag(ModelWorkspaceNavigationTestTag)
             .padding(horizontal = 58.dp, vertical = 8.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
         shape = RoundedCornerShape(24.dp),
@@ -4238,6 +4275,53 @@ private fun SettingRow(
             label = { Text(secondLabel) },
             singleLine = true,
             modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun CompactTransformSlider(
+    label: String,
+    value: Double,
+    range: ClosedFloatingPointRange<Float>,
+    suffix: String,
+    decimals: Int = 1,
+    enabled: Boolean = true,
+    onValueChange: (Double) -> Unit,
+) {
+    val formattedValue = String.format(Locale.US, "%.${decimals}f", value)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(
+            modifier = Modifier.widthIn(min = 92.dp, max = 112.dp),
+            verticalArrangement = Arrangement.spacedBy(1.dp),
+        ) {
+            Text(
+                text = label,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                lineHeight = 12.sp,
+                maxLines = 1,
+            )
+            Text(
+                text = "$formattedValue $suffix",
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp,
+                lineHeight = 14.sp,
+                maxLines = 1,
+            )
+        }
+        Slider(
+            value = value.toFloat().coerceIn(range.start, range.endInclusive),
+            onValueChange = { onValueChange(it.toDouble()) },
+            modifier = Modifier.weight(1f),
+            enabled = enabled,
+            valueRange = range,
         )
     }
 }

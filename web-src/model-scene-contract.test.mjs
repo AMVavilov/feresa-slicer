@@ -6,6 +6,8 @@ import {
     normalizeModelObjectsPayload,
     normalizeModelTransform,
     objectSelectionPayload,
+    pointerGestureIsTap,
+    shouldReportObjectSelection,
 } from "./model-scene-contract.mjs";
 
 test("normalizes stable object ids and independent transforms", () => {
@@ -206,4 +208,27 @@ test("selection payload is deterministic and nullable", () => {
         objectId: null,
         source: "api",
     });
+});
+
+test("pointer selection is reported even when the selected object did not change", () => {
+    assert.equal(shouldReportObjectSelection(false, "pointer"), true);
+    assert.equal(shouldReportObjectSelection(false, "api"), false);
+    assert.equal(shouldReportObjectSelection(true, "api"), true);
+});
+
+test("only a short stationary primary-pointer gesture is treated as a tap", () => {
+    const tap = {
+        isPrimary: true,
+        button: 0,
+        maximumDistance: 8,
+        durationMs: 500,
+        hadMultiplePointers: false,
+        cameraChanged: false,
+    };
+    assert.equal(pointerGestureIsTap(tap), true);
+    assert.equal(pointerGestureIsTap({ ...tap, maximumDistance: 8.1 }), false);
+    assert.equal(pointerGestureIsTap({ ...tap, durationMs: 501 }), false);
+    assert.equal(pointerGestureIsTap({ ...tap, hadMultiplePointers: true }), false);
+    assert.equal(pointerGestureIsTap({ ...tap, cameraChanged: true }), false);
+    assert.equal(pointerGestureIsTap({ ...tap, isPrimary: false }), false);
 });

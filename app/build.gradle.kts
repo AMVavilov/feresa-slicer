@@ -40,8 +40,8 @@ android {
         applicationId = "tech.g24.feresaslicer"
         minSdk = 28
         targetSdk = 36
-        versionCode = 33
-        versionName = "0.17.0-alpha.1"
+        versionCode = 34
+        versionName = "0.17.1-alpha.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["clearPackageData"] = "true"
 

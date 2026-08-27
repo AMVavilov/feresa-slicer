@@ -1,0 +1,4 @@
+Made the quick camera-view panel more compact and kept it open while switching views.
+Tapping the selected model now opens its compact position controls immediately.
+Improved tap and gesture handling when selecting and moving models.
+Improved 3D viewer cleanup and stability on memory-constrained devices.

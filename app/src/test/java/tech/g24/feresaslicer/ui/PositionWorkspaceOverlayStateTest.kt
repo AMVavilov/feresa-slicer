@@ -26,6 +26,45 @@ class PositionWorkspaceOverlayStateTest {
     }
 
     @Test
+    fun triggerStaysActiveForEitherAnExpandedTrayOrAnOpenEditor() {
+        assertFalse(positionWorkspaceOverlayIsActive(PositionWorkspaceOverlayUiState(), false))
+        assertTrue(positionWorkspaceOverlayIsActive(PositionWorkspaceOverlayUiState(true), false))
+        assertTrue(positionWorkspaceOverlayIsActive(PositionWorkspaceOverlayUiState(), true))
+    }
+
+    @Test
+    fun onlyPointerSelectionInPositionWorkspaceOpensOrClosesTheEditor() {
+        assertEquals(
+            PositionControlsViewerSelectionEffect.OPEN_POSITION,
+            positionControlsViewerSelectionEffect(
+                ViewerObjectSelection("model-a", "pointer"),
+                positionWorkspaceActive = true,
+            ),
+        )
+        assertEquals(
+            PositionControlsViewerSelectionEffect.CLOSE,
+            positionControlsViewerSelectionEffect(
+                ViewerObjectSelection(null, "pointer"),
+                positionWorkspaceActive = true,
+            ),
+        )
+        assertEquals(
+            PositionControlsViewerSelectionEffect.NONE,
+            positionControlsViewerSelectionEffect(
+                ViewerObjectSelection("model-a", "api"),
+                positionWorkspaceActive = true,
+            ),
+        )
+        assertEquals(
+            PositionControlsViewerSelectionEffect.NONE,
+            positionControlsViewerSelectionEffect(
+                ViewerObjectSelection("model-a", "pointer"),
+                positionWorkspaceActive = false,
+            ),
+        )
+    }
+
+    @Test
     fun triggerDescriptionsExposeActionAndStateInBothLanguages() {
         assertEquals(
             "Показать инструменты положения",

@@ -7,6 +7,8 @@ import {
     normalizeModelObjectsPayload,
     normalizeModelTransform,
     objectSelectionPayload,
+    pointerGestureIsTap,
+    shouldReportObjectSelection,
 } from "./model-scene-contract.mjs";
 import {
     lineTypeColor,
@@ -89,6 +91,8 @@ let bedWidth = 220;
 let bedDepth = 220;
 let bedGroup = null;
 let renderQueued = false;
+let renderFrame = null;
+let toolpathRenderedFrame = null;
 let cameraTransitionFrame = null;
 let cameraTransitionGeneration = 0;
 let activeCameraPreset = null;
@@ -129,24 +133,28 @@ const pointerPosition = new THREE.Vector2();
 const activePointers = new Set();
 let pointerDown = null;
 let gestureHadMultiplePointers = false;
+let resizeObserver = null;
+let disposed = false;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(darkTheme ? 0x202421 : 0xeef1ec);
 
 function render() {
-    if (renderer && camera) renderer.render(scene, camera);
+    if (!disposed && renderer && camera) renderer.render(scene, camera);
 }
 
 function requestRender() {
-    if (renderQueued) return;
+    if (disposed || renderQueued) return;
     renderQueued = true;
-    requestAnimationFrame(() => {
+    renderFrame = requestAnimationFrame(() => {
+        renderFrame = null;
         renderQueued = false;
         render();
     });
 }
 
 function reportError(message) {
+    if (disposed) return;
     statusElement.textContent = message;
     statusElement.style.color = "#8b1f17";
     if (window.AndroidBridge?.onError) window.AndroidBridge.onError(String(message));
@@ -155,7 +163,7 @@ function reportError(message) {
 function initRenderer() {
     try {
         renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
         renderer.outputColorSpace = THREE.SRGBColorSpace;
         renderer.shadowMap.enabled = false;
     } catch (error) {
@@ -384,6 +392,7 @@ function cameraStateSnapshot(source = "api", interactionActive = false) {
 }
 
 function reportCameraState(source = "api", interactionActive = false) {
+    if (disposed) return null;
     const payload = cameraStateSnapshot(source, interactionActive);
     if (payload && window.AndroidBridge?.onCameraState) {
         window.AndroidBridge.onCameraState(JSON.stringify(payload));
@@ -840,6 +849,7 @@ function updateModelAppearance(record) {
 }
 
 function reportSceneState(notify = true) {
+    if (disposed) return;
     const aggregateBounds = modelBounds();
     if (!aggregateBounds) return;
     const objects = [];
@@ -862,7 +872,7 @@ function reportSceneState(notify = true) {
 }
 
 function reportObjectSelection(objectId, source) {
-    if (window.AndroidBridge?.onObjectSelected) {
+    if (!disposed && window.AndroidBridge?.onObjectSelected) {
         window.AndroidBridge.onObjectSelected(JSON.stringify(objectSelectionPayload(objectId, source)));
     }
 }
@@ -881,7 +891,9 @@ function selectObject(objectId, notify = true, source = "api") {
     const changed = selectedObjectId !== normalizedObjectId;
     selectedObjectId = normalizedObjectId;
     for (const record of modelObjects.values()) updateModelAppearance(record);
-    if (notify && changed) reportObjectSelection(selectedObjectId, source);
+    if (notify && shouldReportObjectSelection(changed, source)) {
+        reportObjectSelection(selectedObjectId, source);
+    }
     requestRender();
     return selectedObjectId;
 }
@@ -928,6 +940,10 @@ function setTheme(enabled) {
 }
 
 function disposeToolpathLines() {
+    if (toolpathRenderedFrame != null) {
+        cancelAnimationFrame(toolpathRenderedFrame);
+        toolpathRenderedFrame = null;
+    }
     if (!toolpathLines) return;
     scene.remove(toolpathLines);
     toolpathLines.geometry.dispose();
@@ -1071,7 +1087,7 @@ function segmentColor(segment, maximumSpeed, lineWidthRange, layerHeightRange) {
 }
 
 function reportToolpathSelection(eligible, visible) {
-    if (window.AndroidBridge?.onToolpathSelection) {
+    if (!disposed && window.AndroidBridge?.onToolpathSelection) {
         window.AndroidBridge.onToolpathSelection(
             JSON.stringify(toolpathSelectionPayload(eligible, visible, {
                 lineCount: toolpathData?.lineCount ?? 0,
@@ -1139,8 +1155,9 @@ function rebuildToolpath() {
     statusElement.textContent = `${toolpathSegmentCount} / ${toolpathEligibleSegmentCount} ${viewerText.segments} · ${viewerText.layers} ${toolpathPreview.minimumLayer + 1}–${Math.min(toolpathPreview.maximumLayer + 1, toolpathData.layerCount)}`;
     requestRender();
     const renderedLines = toolpathLines;
-    requestAnimationFrame(() => {
-        if (toolpathLines === renderedLines && window.AndroidBridge?.onToolpathRendered) {
+    toolpathRenderedFrame = requestAnimationFrame(() => {
+        toolpathRenderedFrame = null;
+        if (!disposed && toolpathLines === renderedLines && window.AndroidBridge?.onToolpathRendered) {
             window.AndroidBridge.onToolpathRendered(toolpathSegmentCount);
         }
     });
@@ -1226,15 +1243,39 @@ function onPointerDown(event) {
     activePointers.add(event.pointerId);
     if (activePointers.size > 1) gestureHadMultiplePointers = true;
     if (event.isPrimary) {
-        pointerDown = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+        pointerDown = {
+            pointerId: event.pointerId,
+            x: event.clientX,
+            y: event.clientY,
+            button: event.button,
+            startedAt: event.timeStamp,
+            maximumDistance: 0,
+            cameraRevision: cameraMutationRevision,
+        };
     }
 }
 
+function onPointerMove(event) {
+    if (pointerDown?.pointerId !== event.pointerId) return;
+    pointerDown.maximumDistance = Math.max(
+        pointerDown.maximumDistance,
+        Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y),
+    );
+}
+
 function onPointerUp(event) {
-    const distance = pointerDown?.pointerId === event.pointerId
-        ? Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y)
+    const pointer = pointerDown?.pointerId === event.pointerId ? pointerDown : null;
+    const releaseDistance = pointer
+        ? Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y)
         : Number.POSITIVE_INFINITY;
-    const isTap = event.isPrimary && distance <= 8 && !gestureHadMultiplePointers;
+    const isTap = pointerGestureIsTap({
+        isPrimary: event.isPrimary,
+        button: pointer?.button,
+        maximumDistance: Math.max(pointer?.maximumDistance ?? 0, releaseDistance),
+        durationMs: pointer ? event.timeStamp - pointer.startedAt : Number.POSITIVE_INFINITY,
+        hadMultiplePointers: gestureHadMultiplePointers,
+        cameraChanged: pointer ? cameraMutationRevision !== pointer.cameraRevision : true,
+    });
     activePointers.delete(event.pointerId);
     if (isTap) selectObjectAtPointer(event);
     if (event.isPrimary) pointerDown = null;
@@ -1261,7 +1302,80 @@ function resize() {
     requestRender();
 }
 
+/**
+ * Permanently releases this viewer instance before Android destroys its WebView.
+ * The operation is intentionally idempotent because the JavaScript callback and
+ * Android's bounded fallback may race with a renderer-process termination.
+ */
+function disposeViewer() {
+    if (disposed) return false;
+    disposed = true;
+
+    modelRequestGate.invalidate();
+    gcodeRequestGate.invalidate();
+    toolpathCommandSourceGeneration += 1;
+    cancelCameraTransition();
+
+    if (renderFrame != null) cancelAnimationFrame(renderFrame);
+    renderFrame = null;
+    renderQueued = false;
+    if (toolpathRenderedFrame != null) cancelAnimationFrame(toolpathRenderedFrame);
+    toolpathRenderedFrame = null;
+
+    resizeObserver?.disconnect();
+    resizeObserver = null;
+    resetButton.removeEventListener("click", frameAll);
+    canvas.removeEventListener("pointerdown", onPointerDown);
+    canvas.removeEventListener("pointermove", onPointerMove);
+    canvas.removeEventListener("pointerup", onPointerUp);
+    canvas.removeEventListener("pointercancel", onPointerCancel);
+    window.removeEventListener("resize", resize);
+
+    if (controls) {
+        controls.removeEventListener("start", onCameraControlsStart);
+        controls.removeEventListener("change", onCameraControlsChange);
+        controls.removeEventListener("end", onCameraControlsEnd);
+        controls.dispose();
+    }
+    controls = null;
+    activePointers.clear();
+    pointerDown = null;
+    gestureHadMultiplePointers = false;
+    cameraGestureActive = false;
+    cameraGestureMoved = false;
+
+    modelLoadInProgress = false;
+    pendingObjectSelection = undefined;
+    pendingObjectTransforms.clear();
+    disposeLoadedModels();
+
+    toolpathData = null;
+    toolpathSource = null;
+    toolpathLineStarts = null;
+    toolpathVersion = null;
+    disposeToolpathLines();
+
+    if (bedGroup) {
+        scene.remove(bedGroup);
+        disposeObject3DResources(bedGroup);
+        bedGroup = null;
+    }
+    scene.clear();
+
+    const rendererToDispose = renderer;
+    renderer = null;
+    camera = null;
+    if (rendererToDispose) {
+        rendererToDispose.setAnimationLoop(null);
+        rendererToDispose.renderLists?.dispose();
+        rendererToDispose.dispose();
+        rendererToDispose.forceContextLoss();
+    }
+    return true;
+}
+
 window.FeresaSlicerViewer = {
+    dispose: disposeViewer,
     loadModel,
     loadModels,
     clearModels,
@@ -1286,10 +1400,12 @@ window.FeresaSlicerViewer = {
 
 resetButton.addEventListener("click", frameAll);
 canvas.addEventListener("pointerdown", onPointerDown);
+canvas.addEventListener("pointermove", onPointerMove);
 canvas.addEventListener("pointerup", onPointerUp);
 canvas.addEventListener("pointercancel", onPointerCancel);
 window.addEventListener("resize", resize);
-new ResizeObserver(resize).observe(document.body);
+resizeObserver = new ResizeObserver(resize);
+resizeObserver.observe(document.body);
 
 if (initRenderer()) {
     setTheme(darkTheme);
@@ -1298,6 +1414,6 @@ if (initRenderer()) {
     // loadModels() restores that snapshot would overwrite it. The first authoritative camera
     // callback is emitted by settleCameraAfterSceneChange() after the scene has either restored
     // the saved camera or auto-fitted the newly loaded model/bed.
-    if (window.AndroidBridge?.onReady) window.AndroidBridge.onReady();
+    if (!disposed && window.AndroidBridge?.onReady) window.AndroidBridge.onReady();
     requestRender();
 }
